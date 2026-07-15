@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shiki 多模型委派架构</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment: #f5f4ed;
+    --ivory: #faf9f5;
+    --near-black: #141413;
+    --olive: #504e49;
+    --stone: #6b6a64;
+    --brand: #1B365D;
+    --brand-tint: #EEF2F7;
+    --border: #e8e6dc;
+    --cloud: #EEEDE6;
+    --cloud-stroke: #B2B1AC;
+    --external: #E9E8E1;
+    --store: #EAE9E2;
+    --dots: #E3E2DC;
+    --serif: Charter, Georgia, "Songti SC", STSong, serif;
+    --mono: "SF Mono", Consolas, "Source Han Serif SC", "Songti SC", monospace;
+  }
+
+  html, body { width: 1200px; height: 760px; overflow: hidden; }
+
+  body {
+    background: var(--parchment);
+    color: var(--near-black);
+    font-family: var(--serif);
+  }
+
+  .diagram { width: 1200px; height: 760px; }
+  svg { display: block; width: 1200px; height: 760px; }
+</style>
+</head>
+<body>
+  <main class="diagram">
+    <svg viewBox="0 0 1200 760" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="diagram-title diagram-desc">
+      <title id="diagram-title">Shiki 多模型委派架构</title>
+      <desc id="diagram-desc">用户目标由主模型规划，依次交给 deep-reasoner 分析、fast-worker 实施、qa-runner 验证，最后得到已验证结果。验证失败时回到 fast-worker 修复。底部展示 Claude Code 与 Codex 的角色模型和配置载体映射。</desc>
+      <defs>
+        <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+          <circle cx="1" cy="1" r="0.9" fill="#E3E2DC"/>
+        </pattern>
+      </defs>
+
+      <rect width="1200" height="760" fill="#f5f4ed"/>
+      <rect width="1200" height="760" fill="url(#dots)" opacity="0.55"/>
+
+      <text x="48" y="52" fill="#6b6a64" font-family="var(--mono)" font-size="12" letter-spacing="2">ORCHESTRATION ARCHITECTURE</text>
+      <text x="48" y="92" fill="#141413" font-family="var(--serif)" font-size="28" font-weight="500">Shiki 多模型委派闭环</text>
+      <text x="48" y="124" fill="#504e49" font-family="var(--serif)" font-size="16">主模型保留规划与综合职责，分析、实施和验证由专职 agent 串行完成</text>
+      <line x1="48" y1="152" x2="1152" y2="152" stroke="#e8e6dc" stroke-width="1"/>
+
+      <!-- Main path, drawn behind nodes -->
+      <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="176" y1="252" x2="224" y2="252" stroke="#504e49" stroke-width="2"/>
+        <path d="M 216 248 L 224 252 L 216 256" stroke="#504e49" stroke-width="2"/>
+        <line x1="384" y1="252" x2="432" y2="252" stroke="#1B365D" stroke-width="2"/>
+        <path d="M 424 248 L 432 252 L 424 256" stroke="#1B365D" stroke-width="2"/>
+        <line x1="576" y1="252" x2="624" y2="252" stroke="#504e49" stroke-width="2"/>
+        <path d="M 616 248 L 624 252 L 616 256" stroke="#504e49" stroke-width="2"/>
+        <line x1="768" y1="252" x2="816" y2="252" stroke="#504e49" stroke-width="2"/>
+        <path d="M 808 248 L 816 252 L 808 256" stroke="#504e49" stroke-width="2"/>
+        <line x1="960" y1="252" x2="1008" y2="252" stroke="#504e49" stroke-width="2"/>
+        <path d="M 1000 248 L 1008 252 L 1000 256" stroke="#504e49" stroke-width="2"/>
+
+        <!-- QA fail is auxiliary and returns to implementation -->
+        <path d="M 888 300 L 888 352 L 696 352 L 696 300" stroke="#6b6a64" stroke-width="1" stroke-dasharray="8 8"/>
+        <path d="M 692 308 L 696 300 L 700 308" stroke="#6b6a64" stroke-width="1"/>
+      </g>
+
+      <!-- Arrow labels -->
+      <g font-family="var(--mono)" font-size="12" text-anchor="middle" letter-spacing="1">
+        <rect x="180" y="232" width="40" height="16" fill="#f5f4ed"/>
+        <text x="200" y="244" fill="#504e49">计划</text>
+        <rect x="388" y="232" width="40" height="16" fill="#f5f4ed"/>
+        <text x="408" y="244" fill="#1B365D">分派</text>
+        <rect x="580" y="232" width="40" height="16" fill="#f5f4ed"/>
+        <text x="600" y="244" fill="#504e49">方案</text>
+        <rect x="772" y="232" width="40" height="16" fill="#f5f4ed"/>
+        <text x="792" y="244" fill="#504e49">交付</text>
+        <rect x="964" y="232" width="40" height="16" fill="#f5f4ed"/>
+        <text x="984" y="244" fill="#504e49">通过</text>
+        <rect x="748" y="340" width="88" height="20" fill="#f5f4ed"/>
+        <text x="792" y="352" fill="#6b6a64">FAIL · 修复</text>
+      </g>
+
+      <!-- Six nodes -->
+      <g>
+        <rect x="48" y="204" width="128" height="96" rx="8" fill="#E9E8E1" stroke="#6b6a64" stroke-width="1"/>
+        <text x="64" y="228" fill="#6b6a64" font-family="var(--mono)" font-size="12" letter-spacing="1">INPUT</text>
+        <text x="112" y="256" fill="#141413" font-family="var(--serif)" font-size="16" font-weight="600" text-anchor="middle">用户目标</text>
+        <text x="112" y="280" fill="#504e49" font-family="var(--mono)" font-size="12" text-anchor="middle">需求与上下文</text>
+
+        <rect x="224" y="204" width="160" height="96" rx="8" fill="#EEF2F7" stroke="#1B365D" stroke-width="2"/>
+        <text x="240" y="228" fill="#1B365D" font-family="var(--mono)" font-size="12" letter-spacing="1">ORCHESTRATOR</text>
+        <text x="304" y="256" fill="#141413" font-family="var(--serif)" font-size="16" font-weight="600" text-anchor="middle">主模型</text>
+        <text x="304" y="280" fill="#504e49" font-family="var(--mono)" font-size="12" text-anchor="middle">规划 / 分派 / 综合</text>
+
+        <rect x="432" y="204" width="144" height="96" rx="8" fill="#faf9f5" stroke="#141413" stroke-width="1"/>
+        <text x="448" y="228" fill="#6b6a64" font-family="var(--mono)" font-size="12" letter-spacing="1">REASON</text>
+        <text x="504" y="256" fill="#141413" font-family="var(--serif)" font-size="16" font-weight="600" text-anchor="middle">deep-reasoner</text>
+        <text x="504" y="280" fill="#504e49" font-family="var(--mono)" font-size="12" text-anchor="middle">分析 / 架构 / 取舍</text>
+
+        <rect x="624" y="204" width="144" height="96" rx="8" fill="#EEEDE6" stroke="#B2B1AC" stroke-width="1"/>
+        <text x="640" y="228" fill="#6b6a64" font-family="var(--mono)" font-size="12" letter-spacing="1">BUILD</text>
+        <text x="696" y="256" fill="#141413" font-family="var(--serif)" font-size="16" font-weight="600" text-anchor="middle">fast-worker</text>
+        <text x="696" y="280" fill="#504e49" font-family="var(--mono)" font-size="12" text-anchor="middle">实现 / 编辑 / 修复</text>
+
+        <rect x="816" y="204" width="144" height="96" rx="8" fill="#EAE9E2" stroke="#504e49" stroke-width="1"/>
+        <text x="832" y="228" fill="#6b6a64" font-family="var(--mono)" font-size="12" letter-spacing="1">VERIFY</text>
+        <text x="888" y="256" fill="#141413" font-family="var(--serif)" font-size="16" font-weight="600" text-anchor="middle">qa-runner</text>
+        <text x="888" y="280" fill="#504e49" font-family="var(--mono)" font-size="12" text-anchor="middle">测试 / 检查 / 报告</text>
+
+        <rect x="1008" y="204" width="144" height="96" rx="8" fill="#faf9f5" stroke="#141413" stroke-width="1"/>
+        <text x="1024" y="228" fill="#6b6a64" font-family="var(--mono)" font-size="12" letter-spacing="1">OUTPUT</text>
+        <text x="1080" y="256" fill="#141413" font-family="var(--serif)" font-size="16" font-weight="600" text-anchor="middle">已验证结果</text>
+        <text x="1080" y="280" fill="#504e49" font-family="var(--mono)" font-size="12" text-anchor="middle">由主模型汇总</text>
+      </g>
+
+      <!-- Platform bands align the same three roles without adding nodes -->
+      <g>
+        <rect x="48" y="420" width="1104" height="72" rx="8" fill="#faf9f5" stroke="#e8e6dc" stroke-width="1"/>
+        <line x1="288" y1="420" x2="288" y2="492" stroke="#e8e6dc" stroke-width="1"/>
+        <line x1="576" y1="420" x2="576" y2="492" stroke="#e8e6dc" stroke-width="1"/>
+        <line x1="864" y1="420" x2="864" y2="492" stroke="#e8e6dc" stroke-width="1"/>
+        <text x="72" y="448" fill="#141413" font-family="var(--serif)" font-size="16" font-weight="600">Claude Code</text>
+        <text x="72" y="472" fill="#504e49" font-family="var(--mono)" font-size="12">CLAUDE.md + agents/*.md</text>
+        <text x="312" y="448" fill="#6b6a64" font-family="var(--mono)" font-size="12">DEEP REASONING</text>
+        <text x="312" y="472" fill="#141413" font-family="var(--serif)" font-size="16">deep-reasoner · Opus</text>
+        <text x="600" y="448" fill="#6b6a64" font-family="var(--mono)" font-size="12">IMPLEMENTATION</text>
+        <text x="600" y="472" fill="#141413" font-family="var(--serif)" font-size="16">fast-worker · Sonnet</text>
+        <text x="888" y="448" fill="#6b6a64" font-family="var(--mono)" font-size="12">VERIFICATION</text>
+        <text x="888" y="472" fill="#141413" font-family="var(--serif)" font-size="16">qa-runner · Haiku</text>
+
+        <rect x="48" y="512" width="1104" height="72" rx="8" fill="#EEEDE6" stroke="#e8e6dc" stroke-width="1"/>
+        <line x1="288" y1="512" x2="288" y2="584" stroke="#e8e6dc" stroke-width="1"/>
+        <line x1="576" y1="512" x2="576" y2="584" stroke="#e8e6dc" stroke-width="1"/>
+        <line x1="864" y1="512" x2="864" y2="584" stroke="#e8e6dc" stroke-width="1"/>
+        <text x="72" y="540" fill="#141413" font-family="var(--serif)" font-size="16" font-weight="600">Codex</text>
+        <text x="72" y="564" fill="#504e49" font-family="var(--mono)" font-size="12">codex/AGENTS.md + codex/agents/*.toml</text>
+        <text x="312" y="540" fill="#6b6a64" font-family="var(--mono)" font-size="12">DEEP REASONING</text>
+        <text x="312" y="564" fill="#141413" font-family="var(--serif)" font-size="16">deep-reasoner · gpt-5.6-sol</text>
+        <text x="600" y="540" fill="#6b6a64" font-family="var(--mono)" font-size="12">IMPLEMENTATION</text>
+        <text x="600" y="564" fill="#141413" font-family="var(--serif)" font-size="16">fast-worker · gpt-5.6-terra</text>
+        <text x="888" y="540" fill="#6b6a64" font-family="var(--mono)" font-size="12">VERIFICATION</text>
+        <text x="888" y="564" fill="#141413" font-family="var(--serif)" font-size="16">qa-runner · gpt-5.6-luna</text>
+      </g>
+
+      <line x1="48" y1="624" x2="1152" y2="624" stroke="#e8e6dc" stroke-width="1"/>
+      <text x="48" y="656" fill="#504e49" font-family="var(--serif)" font-size="16">同一职责边界，两套客户端配置；验证 agent 只报告，修复始终回到实施角色</text>
+      <text x="48" y="692" fill="#6b6a64" font-family="var(--mono)" font-size="12" letter-spacing="1">SCOPE</text>
+      <text x="108" y="692" fill="#504e49" font-family="var(--serif)" font-size="12">图中仅表达委派机制与角色映射，安装、版本、并发和 Git 约束见 README 与规则文件</text>
+    </svg>
+  </main>
+</body>
+</html>
