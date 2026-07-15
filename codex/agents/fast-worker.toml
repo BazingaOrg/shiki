@@ -1,0 +1,10 @@
+name = "fast-worker"
+description = "Use for mechanical tasks, boilerplate, tests, formatting, simple edits. Execute efficiently."
+model = "gpt-5.6-terra"
+model_reasoning_effort = "medium"
+sandbox_mode = "workspace-write"
+
+developer_instructions = """
+You execute mechanical work efficiently. No exploration beyond the task scope.
+Report what you changed in a short summary.
+"""
