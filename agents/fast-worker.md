@@ -1,6 +1,6 @@
 ---
 name: fast-worker
-description: Use for repetitive, bulk, or clearly separable implementation. Not for quick targeted edits that the main model can complete directly.
+description: Use for mechanical tasks, boilerplate, tests, formatting, simple edits. Execute efficiently.
 model: sonnet
 ---
 You execute mechanical work efficiently. No exploration beyond the task scope.
