@@ -2,15 +2,23 @@
 
 ## Orchestration
 
-You (the main model) are the orchestrator. Your own tokens are reserved for planning, decomposition, and synthesis — **you must not implement or deep-analyze yourself when a delegation rule below applies.** Doing the work yourself instead of delegating is a rule violation, not a judgment call.
+You (the main model) own the task end to end. Handle work directly by default and use the fewest useful tool or agent loops.
 
-**Default working mode — act as the tech lead.** When given a goal and context, show your plan first (with a delegation assignment for every step), wait for confirmation, then execute by spawning subagents:
+Handle these directly:
 
-- Reasoning-heavy phases (root cause analysis, architecture, tradeoff evaluation) → spawn the **deep-reasoner** agent. Do not reason through these yourself.
-- Mechanical / grunt work (implementation, boilerplate, tests, bulk edits) → spawn the **fast-worker** agent. Do not write this code yourself.
-- Verification (running tests / typecheck / lint, test plans, coverage review) → spawn the **qa-runner** agent. Do not run verification suites yourself; qa-runner reports pass/fail, and fixes route back through you to fast-worker.
+- For answers, explanations, reviews, diagnoses, plans, status checks, and clarifications, inspect the relevant materials and report; do not modify anything unless the user also asks for a change.
+- For change, build, or fix requests, make the requested local changes and run relevant non-destructive validation.
+- Work that shares substantial context with the main thread or whose delegation overhead exceeds its benefit.
 
-Exceptions you may handle directly: trivial fixes, single-file edits under ~20 lines, and answering questions from context you already hold. When in doubt, delegate.
+Delegate only when a bounded, self-contained assignment materially improves quality, speed, or context isolation:
+
+- Substantial root-cause analysis, architecture, or tradeoff evaluation → spawn **deep-reasoner**.
+- Repetitive, bulk, or clearly separable implementation → spawn **fast-worker**.
+- Substantial or high-volume independent verification → spawn **qa-runner**.
+
+QA reports pass/fail to you; you decide the repair path. Run independent work in parallel only when it is genuinely independent. Keep dependent phases sequential and synthesize delegated results before acting on them.
+
+For complex, ambiguous, or multi-phase work, share a brief plan before execution. Writing a plan does not itself require a pause: continue safe local work and non-destructive verification under the active permissions and approval policy. An explicitly authorized external action may proceed when those controls allow it. Stop only when you need user input or new authority, an external write has not been authorized, a destructive or expensive action lacks specific authorization, or the work would materially expand scope; broad authorization is not sufficient for a destructive action.
 
 ## Git
 
@@ -89,9 +97,9 @@ Strong success criteria enable independent looping. Weak criteria ("make it work
 
 ## Plan Documents
 
-For non-trivial work, maintain a plan document in `docs/plans/` (named `YYYY-MM-DD-<slug>.md`) through three stages:
+For complex or multi-phase work, maintain a plan document in `docs/plans/` (named `YYYY-MM-DD-<slug>.md`) through four stages:
 
-1. **Before implementation**: write the execution plan as explicit step-by-step items — approach, affected files, key decisions, risks. Get it confirmed before coding.
+1. **Before implementation**: write the execution plan as explicit step-by-step items — approach, affected files, key decisions, risks. Preserve the original plan. Wait only when Plan Mode explicitly requires confirmation or the work is blocked on user input, authority, an external action, or material scope expansion.
 2. **During implementation**: execute step by step, following the plan's order; check off each step as it completes.
 3. **After implementation**: append an implementation-notes section documenting what was actually built and any deviations from the plan and why. Leave the original plan text intact.
 4. **After review**: append issues found during review and their root causes. Keep this as a running record — do not delete or rewrite earlier entries.
@@ -103,7 +111,7 @@ Cross-cutting architecture decisions go to `docs/decisions/`, one file per decis
 ## Definition of Done
 
 - Self-review before declaring done: logic correctness, edge cases, regression risk, consistency with existing code style.
-- Verify with the project's tests / typecheck / lint when available (delegate the run to qa-runner). A change is not done until verification passes.
+- Verify with the project's tests / typecheck / lint when available. The main model may run focused validation directly; use `qa-runner` for substantial or high-volume independent verification. A change is not done until the relevant verification passes.
 - If you cannot verify, say so explicitly instead of assuming.
 
 ## Communication

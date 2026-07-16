@@ -1,5 +1,5 @@
 name = "fast-worker"
-description = "Use for mechanical tasks, boilerplate, tests, formatting, simple edits. Execute efficiently."
+description = "Use for repetitive, bulk, or clearly separable implementation. Not for quick targeted edits that the main model can complete directly."
 model = "gpt-5.6-terra"
 model_reasoning_effort = "medium"
 sandbox_mode = "workspace-write"
