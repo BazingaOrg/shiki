@@ -1,0 +1,4 @@
+# Shiki qa-runner — low effort, execute for tests (no source edits by instruction)
+description = "Verification: tests, typecheck, lint; report only"
+default_capability_mode = "execute"
+reasoning_effort = "low"

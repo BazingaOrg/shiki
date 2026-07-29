@@ -1,0 +1,4 @@
+# Shiki fast-worker — medium effort, full write access
+description = "Mechanical implementation: code, boilerplate, bulk edits"
+default_capability_mode = "all"
+reasoning_effort = "medium"

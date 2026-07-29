@@ -1,0 +1,10 @@
+# Optional fragment to merge into ~/.grok/config.toml
+# Prevents double-injection of ~/.claude/Claude.md / ~/.claude/agents while
+# keeping Claude skills/MCP/hooks available if you still use them.
+
+[compat.claude]
+agents = false
+# skills = true   # default: keep Claude skills
+# rules  = true   # only affects ~/.claude/rules/, not Claude.md
+# mcps   = true
+# hooks  = true

@@ -1,0 +1,4 @@
+# Shiki deep-reasoner — high effort, read-only analysis
+description = "Reasoning-heavy phases: root cause, architecture, tradeoffs"
+default_capability_mode = "read-only"
+reasoning_effort = "high"
