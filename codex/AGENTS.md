@@ -14,14 +14,10 @@ Exceptions you may handle directly: trivial fixes, single-file edits under ~20 l
 
 ## Git
 
-- Do not commit or push unless the user explicitly asks. When asked to integrate, do so only after verification passes.
-- This repo requires linear history: resolve conflicts with `rebase` or `cherry-pick`, never introduce merge commits. Run `git pull --rebase` before committing.
-- Push rewritten branches with `--force-with-lease`. Never force-push shared branches.
-- Merge PRs via squash — one feature, one commit on main.
-- One change, one semantically clear commit. Conventional Commits: `type(scope): description`
-  - Types: feat, fix, docs, refactor, style, test, chore, perf
-  - Scope: file name for single-file changes, module name for multi-file
-  - Examples: `fix(auth): refresh token on expiry`, `feat(user-list): add pagination`
+- Do not commit, push, or open PRs unless the user explicitly asks for that action. Commit-only requests must not push. Integrate only after verification passes.
+- One semantic change per commit; keep tightly coupled files for the same feature together. Use Conventional Commits: `type(scope): description` (feat, fix, docs, refactor, style, test, chore, perf; scope = module/area, or a single filename when the change is one file).
+- Default history (override per project): linear via rebase/cherry-pick — no merge commits. Land PRs with squash so main stays roughly one feature per commit. When behind upstream, `git pull --rebase` before push (stash WIP if needed).
+- Rewrite remote history only with `--force-with-lease`; never on shared branches (`main` or the default branch).
 - Never commit secrets or credentials.
 
 ## Engineering Principles
