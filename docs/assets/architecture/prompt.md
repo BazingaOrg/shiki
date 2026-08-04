@@ -2,27 +2,20 @@
 
 ## Must preserve
 
-- 保留 6 节点横向主路径：用户目标 → 主模型 → `deep-reasoner` → `fast-worker` → `qa-runner` → 已验证结果。
-- 保留主模型作为唯一 focal；它负责规划、分派与综合，不承担专职 agent 的分析、实施或验证职责。
-- 保留 QA FAIL 从 `qa-runner` 回到 `fast-worker` 的辅助虚线路径，验证角色只报告，不自行修复。
-- 保留底部两条 platform band，并让三个角色按列对齐：Claude Code 映射 Opus / Sonnet / Haiku，Codex 映射 `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna`。
-- 保留配置载体：Claude Code 使用 `CLAUDE.md` 与 `agents/*.md`，Codex 使用 `codex/AGENTS.md` 与 `codex/agents/*.toml`。
+- 主路径表达用户目标 → 主模型 → 默认直接处理或选择性角色 → 结果。
+- 角色是可选且有界的 deep、worker、QA；高保障只表达同一未变 diff、独立 QA、fresh review 与精确授权。
+- 不画完整状态机、`.shiki`、spec 或 patch hash；不暗示平台权限相同。
 
 ## Suggested additions
 
-- 当前事实源没有要求新增架构对象；后续若角色、模型名或配置路径变化，应先更新仓库定义，再同步图中文字、`title`、`desc` 与 PNG。
-- 如需展示并行委派、高风险双模型决策或更细的验证循环，应新建配套流程图，不扩张当前 6 节点主图。
+- 若完整可审计协议被用户明确采用，可另画专门审计图；当前图只画通用风险控制。
 
 ## Visual direction
 
-- 维持从左到右的一次扫描路径，主路径强于回流线，platform band 只承担映射而不成为新节点。
-- 使用暖纸 `#f5f4ed`、单一墨蓝 `#1B365D` 与暖灰；保持细线、低圆角、无渐变、无立体效果。
-- 主模型是唯一墨蓝焦点，其余节点保持中性；节点和 band 使用统一基线与充足留白。
-- 从 `index.html` 以 2800–3200 px 宽重新导出 PNG；不直接编辑、裁切或缩放 PNG。
+- 1200×760 暖纸 `#f5f4ed`、单一墨蓝 `#1B365D`、暖灰、细线、无渐变/阴影/脚本/外部资源。
+- 保持少于 9 个节点、清晰留白与安全边距；SVG 具备 `role="img"`、`title`、`desc`。HTML 改动后重导 3000px PNG。
 
 ## Sister boundaries
 
-- 安装步骤、版本兼容、价格或 token、并发策略和 Git 约束属于 `README.md`、`CLAUDE.md` 与 `codex/AGENTS.md`，不进入本图。
-- Claude Code 独有的高风险双模型规则留在 `CLAUDE.md`，不绘成跨平台共同机制。
-- 简单任务的直接处理例外属于规则说明，不进入主路径。
-- 当前没有配套 sister diagram；若未来需要展开分支逻辑，新增独立 flowchart 并在此记录路径。
+- 可选完整审计协议在 `docs/verified-lane.md`；平台安装与实际权限在 README、CODEX、GROK。
+- 图外保留具体命令、模型版本、运行时权限和 Git 细节。

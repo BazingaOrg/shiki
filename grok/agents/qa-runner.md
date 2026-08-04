@@ -23,3 +23,5 @@ Guidelines:
 - Capture failing command names, exit codes, and relevant log lines.
 - Temporary test artifacts are fine; application source edits are not.
 - Return a structured pass/fail summary the orchestrator can act on.
+- Record commands, exit codes, and PASS/FAIL; do not edit source, fix failures,
+  approve publication, or expand scope.

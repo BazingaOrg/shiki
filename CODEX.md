@@ -9,6 +9,7 @@
 - [与 Claude Code 版的对应关系](#与-claude-code-版的对应关系)
 - [架构](#架构)
 - [安装](#安装)
+- [双 lane](#双-lane)
 - [Custom Agent 定义](#custom-agent-定义)
 - [AGENTS.md](#agentsmd)
 - [并发配置](#并发配置)
@@ -65,7 +66,15 @@ mkdir -p ~/.codex/agents
 cp codex/agents/deep-reasoner.toml codex/agents/fast-worker.toml codex/agents/qa-runner.toml ~/.codex/agents/
 ```
 
-**3. 放置 AGENTS.md 到你的项目根目录:**
+**3. 安装用户级共享规则（主用法）:**
+
+```bash
+cp -i codex/AGENTS.md ~/.codex/AGENTS.md
+```
+
+支持该层级的 Codex 版本会加载此共享规则；若本地版本行为不同，请按本机官方文档放置并保留同一内容。
+
+**4. 仅在需要覆盖时放置项目级 AGENTS.md:**
 
 ```bash
 cp codex/AGENTS.md /path/to/your-project/AGENTS.md
@@ -74,7 +83,13 @@ cp codex/AGENTS.md /path/to/your-project/AGENTS.md
 > - Codex 会从工作目录逐级向上加载沿途所有 AGENTS.md,路径越近优先级越高,因此可以全局通用规则 + 项目特有规则分层放置。
 > - 已有 AGENTS.md 的项目建议手动合并而不是覆盖。
 
-**4. 重启 Codex 会话。**
+**5. 重启 Codex 会话。**
+
+## 双 lane
+
+日常工作走 **light lane**。只有用户明确要求隔离、独立 QA 或证据，或任务涉及发布/外部写入、付款、迁移、不可逆删除、安全边界、全局配置/CI/toolchain、多 writer，或在 commit/push/PR 前要求高保障核验时，才进入 **verified lane**。多文件或非平凡任务不是触发条件。
+
+默认直接处理普通工作；只在有界委派明显提升质量、速度、独立性或上下文时 spawn 对应 custom agent。按风险升级独立 QA，安全、不可逆或用户明确高保障时加 fresh read-only review。完整可审计流程仅在用户明确采用时参考 [docs/verified-lane.md](./docs/verified-lane.md)，不代表 Codex sandbox 或权限模型。
 
 ## Custom Agent 定义
 
@@ -140,38 +155,9 @@ You must not edit source files under any circumstances.
 
 ## AGENTS.md
 
-**AGENTS.md 与 Claude Code 版 CLAUDE.md 的内容大体一致**——Git、Engineering Principles、Plan Documents、Definition of Done、Communication 五个部分是 agent 无关的,原样沿用即可。唯一需要替换的是 Orchestration 一节,Codex 版如下:
+使用仓库中的 [`codex/AGENTS.md`](./codex/AGENTS.md) 作为短、自包含规则：普通工作默认直做；仅在有界委派明显改善结果时 spawn named custom agent；高影响工作按风险升级独立验证。项目级规则只覆盖项目事实，不重复旧的强制编排全文。
 
-```markdown
-## Orchestration
-
-You (the main model) are the orchestrator. Your own tokens are reserved for
-planning, decomposition, and synthesis — **you must not implement or
-deep-analyze yourself when a delegation rule below applies.** Doing the work
-yourself instead of delegating is a rule violation, not a judgment call.
-
-**Default working mode — act as the tech lead.** When given a goal and
-context, show your plan first (with a delegation assignment for every step),
-wait for confirmation, then execute by spawning subagents:
-
-- Reasoning-heavy phases (root cause analysis, architecture, tradeoff
-  evaluation) → spawn the **deep-reasoner** agent. Do not reason through
-  these yourself.
-- Mechanical / grunt work (implementation, boilerplate, tests, bulk edits)
-  → spawn the **fast-worker** agent. Do not write this code yourself.
-- Verification (running tests / typecheck / lint, test plans, coverage
-  review) → spawn the **qa-runner** agent. Do not run verification suites
-  yourself; qa-runner reports pass/fail, and fixes route back through you
-  to fast-worker.
-
-Exceptions you may handle directly: trivial fixes, single-file edits under
-~20 lines, and answering questions from context you already hold.
-When in doubt, delegate.
-```
-
-与 Claude Code 版的措辞差异只有一处:委派动词从 dispatch 改为 spawn,并明确 "spawn the X agent"——Codex 官方文档确认它会遵循 AGENTS.md 中要求委派的指令,而社区实测表明自定义 agent 不会被自动唤起、需要明确要求,所以指令里把动作写得越明确越好。
-
-High-stakes 双模型并行一条未移植:Codex 的并行 subagent 共享同一模型家族,跨家族对照(如 GPT × Claude)需要外部管道,不属于本指南范围。
+按需显式 `spawn` 可验证管道；是否选择性委派由当前任务边界决定，应以当前版本行为与日志验证。
 
 ## 并发配置
 
@@ -193,9 +179,9 @@ max_depth = 1     # 嵌套深度,默认 1:子 agent 可被 spawn,但不能再向
 
 **Step 2 — 显式委派(测管道)。** 发指令:`Spawn the deep-reasoner agent to produce a plan for <真实小需求>`。运行中用 **`/agent`** 命令查看、切换、检查各 agent 线程;主线程最终会收拢各 subagent 的结果。
 
-**Step 3 — 冷启动(测主动性)。** 新开会话,给 reasoning-heavy 或实现类任务,不提任何 agent 名字,看它是否依据 AGENTS.md 主动 spawn。不派 = 措辞约束力不够——确认你用的是上文的强制式 Orchestration 而不是陈述式路由表。
+**Step 3 — 可选路由 smoke。** 新开会话提交拼写修正，预期直接处理；再给独立、复杂且边界清晰的子任务，确认它可在有收益时选择 spawn。未分派不单独构成失败，应结合任务边界、当前版本与日志判断。
 
-**Step 4 — 核对模型与成本。** 各 subagent 线程使用的模型可在线程详情中确认;sol/terra/luna 的单价差距显著(官方定价 sol $5/$30、terra $2.5/$15、luna $1/$6 每百万 token),委派正确与否会直接反映在账单结构上。
+**Step 4 — 核对模型与结果。** 各 subagent 线程使用的模型可在线程详情中确认；应核对委派是否与任务边界和验证结果匹配。
 
 ## 注意事项
 

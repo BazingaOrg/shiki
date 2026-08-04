@@ -11,6 +11,7 @@
 - [与 Claude Code / Codex 的对应关系](#与-claude-code--codex-的对应关系)
 - [架构](#架构)
 - [安装](#安装)
+- [双 lane](#双-lane)
 - [Agent 定义](#agent-定义)
 - [Reasoning effort 分层](#reasoning-effort-分层)
 - [避免 Claude 规则双份注入](#避免-claude-规则双份注入)
@@ -77,7 +78,7 @@ cp -i grok/roles/fast-worker.toml ~/.grok/roles/fast-worker.toml
 cp -i grok/roles/qa-runner.toml ~/.grok/roles/qa-runner.toml
 ```
 
-**3. 放置编排规则：**
+**3. 放置编排规则（用户级为主）：**
 
 - **项目级（推荐写入仓库）：**
 
@@ -100,7 +101,7 @@ cp -i grok/roles/qa-runner.toml ~/.grok/roles/qa-runner.toml
 
 **4. 关闭 Claude 全局 agents 兼容（推荐，避免双份编排）：**
 
-将 [`grok/config.snippet.toml`](./config.snippet.toml) 合并进 `~/.grok/config.toml`：
+将 [`grok/config.snippet.toml`](./grok/config.snippet.toml) 合并进 `~/.grok/config.toml`：
 
 ```toml
 [compat.claude]
@@ -112,6 +113,12 @@ agents = false
 **5. 项目级 agent（可选）：** 复制到 `<项目>/.grok/agents/`；roles 可放到 `<项目>/.grok/roles/`。
 
 **6. 重启 Grok 会话**，或新开一个会话使发现结果生效。
+
+## 双 lane
+
+日常工作走 **light lane**。只有用户明确要求隔离、独立 QA 或证据，或任务涉及发布/外部写入、付款、迁移、不可逆删除、安全边界、全局配置/CI/toolchain、多 writer，或在 commit/push/PR 前要求高保障核验时，才进入 **verified lane**。多文件或非平凡任务不是触发条件。
+
+默认直接处理普通工作；只在有界委派明显提升质量、速度、独立性或上下文时用 `spawn_subagent`。按风险升级独立 QA，安全、不可逆或用户明确高保障时加 fresh read-only review。完整可审计流程仅在用户明确采用时参考 [docs/verified-lane.md](./docs/verified-lane.md)，不代表 Grok permission mode 或权限模型。
 
 ## Agent 定义
 
@@ -238,7 +245,7 @@ grok inspect
    - Agents 含 user：`deep-reasoner` / `fast-worker` / `qa-runner`
 2. 在 TUI 中打开 `/config-agents`（或 `/agents`），列表含上述三个。
 3. 显式要求：spawn `deep-reasoner` 做小型方案；用 `Ctrl+G` 任务窗确认子会话与 effort。
-4. 新开会话，不点名 agent，给需要分析/实现的任务，确认主模型按规则主动分派。
+4. 新开会话做可选路由 smoke：拼写修正应直接处理；独立、复杂且边界清晰的子任务才可能 spawn。未分派不单独构成失败，应结合任务边界、当前版本与日志判断。
 5. 核对子 agent 的 model / effort；未分派时检查规则是否加载、agent 路径、以及 `GROK_SUBAGENTS` / `[subagents] enabled`。
 
 验证关注点：**是否委派、派给谁、用什么模型 / effort**。

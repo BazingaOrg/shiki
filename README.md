@@ -19,11 +19,13 @@
 
 图中展示共享的角色边界与验证回流。各平台模型映射见上表；细节见对应指南。
 
-模板中的编排规则采用强制路由，同时为简单问答、拼写修正和小规模单文件修改保留直接处理的例外。完整规则请查看 [Claude Code 指令](./CLAUDE.md)、[Codex 指令](./codex/AGENTS.md) 与 [Grok 指令](./grok/AGENTS.md)。
+模板默认直接处理；仅当有界委派能明确提升质量、速度、独立性或上下文时选择性分派。按生产、安全、不可逆操作等影响升级独立核验。完整规则请查看 [Claude Code 指令](./CLAUDE.md)、[Codex 指令](./codex/AGENTS.md) 与 [Grok 指令](./grok/AGENTS.md)。
+
+Shiki 默认直接处理普通工作，只在有界委派能明显提升质量、速度、独立性或上下文时才分派角色。生产、发布、认证授权、隐私/密钥、安全、付款、迁移、不可逆操作、全局配置/CI/toolchain、多 writer 或用户明确高保障请求会升级独立核验；多文件本身不触发。三平台共享角色语义，但权限与调用能力按各自配置而不同。完整可审计流程是可选参考：[docs/verified-lane.md](./docs/verified-lane.md)。
 
 ## 快速配置
 
-先克隆仓库并进入根目录。以下示例将 agent 安装为用户级配置，指令文件则放入需要使用编排规则的项目中。
+先克隆仓库并进入根目录。**优先将 agent 与共享规则安装为用户级配置**，再只用项目级规则覆盖该项目独有的构建命令、风险边界或例外；不要把模板直接覆盖进已有项目规则。
 
 ### Claude Code
 
@@ -38,7 +40,7 @@ cp -i agents/qa-runner.md ~/.claude/agents/qa-runner.md
 
 `cp -i` 会在覆盖同名文件前询问。如果目标文件已存在，请拒绝覆盖，比较现有定义与模板后再手动合并。
 
-然后将 [`CLAUDE.md`](./CLAUDE.md) 的规则加入目标项目：
+将 [`CLAUDE.md`](./CLAUDE.md) 作为共享规则安装到你的 Claude Code 用户级规则位置；如本地版本只支持项目规则，则手动合并到项目规则。项目级仅用于覆盖：
 
 - 目标项目**没有** `CLAUDE.md`：可复制模板。
 
@@ -63,7 +65,7 @@ cp -i codex/agents/qa-runner.toml ~/.codex/agents/qa-runner.toml
 
 `cp -i` 会在覆盖同名文件前询问。如果目标文件已存在，请拒绝覆盖，比较现有定义与模板后再手动合并。
 
-然后将 [`codex/AGENTS.md`](./codex/AGENTS.md) 的规则加入目标项目：
+将 [`codex/AGENTS.md`](./codex/AGENTS.md) 作为用户级共享规则安装（例如支持该层级的版本可使用 `~/.codex/AGENTS.md`）；项目级仅用于覆盖：
 
 - 目标项目**没有** `AGENTS.md`：可复制模板。
 
@@ -85,7 +87,7 @@ cp -i grok/agents/*.md ~/.grok/agents/
 cp -i grok/roles/*.toml ~/.grok/roles/
 ```
 
-将 [`grok/AGENTS.md`](./grok/AGENTS.md) 加入目标项目：
+先将 [`grok/AGENTS.md`](./grok/AGENTS.md) 作为用户级全局规则安装；项目级仅用于覆盖：
 
 - 目标项目**没有** `AGENTS.md`：
 
@@ -119,7 +121,7 @@ agents = false
 2. 显式要求主模型调用 `deep-reasoner` 完成一个小型方案任务，通过当前客户端提供的 agent 状态或日志确认委派发生：
    - Codex CLI：`/agent`
    - Grok Build：`Ctrl+G` 任务窗、`/config-agents`、`grok inspect`
-3. 新建一个不含委派先例的会话，提出需要分析或实现的任务，但不点名 agent，确认主模型会按指令主动分派。
+3. 可选做路由 smoke：拼写修正应直接处理；独立、复杂且边界清晰的子任务才可能选择性委派。未分派不单独构成失败，应结合任务边界与客户端日志判断。
 4. 核对实际 agent 使用的模型是否与定义文件一致；如果没有分派，优先检查指令文件是否被加载、agent 路径是否正确，以及本地版本是否支持对应配置。
 
 验证时应关注“是否发生委派、派给谁、使用什么模型”，不要仅凭总 token 或费用推断结果。

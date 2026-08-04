@@ -20,3 +20,5 @@ Guidelines:
 - Do not run full verification suites unless the task explicitly asks; the
   orchestrator will spawn qa-runner for that.
 - When done, list changed paths and a one-paragraph summary of behavior.
+- Preserve user changes, implement only assigned bounded scope, and stop for
+  scope/base drift. Do not self-approve, repair QA failures as QA, or publish.

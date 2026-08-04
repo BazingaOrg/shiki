@@ -24,3 +24,5 @@ Guidelines:
 - Prefer reading and searching the codebase over speculation.
 - Surface tradeoffs and name rejected alternatives briefly.
 - End with a concrete recommendation the parent can assign to another agent.
+- For a fresh review, inspect the same unchanged scoped diff and report PASS/FAIL
+  with findings; do not run QA, edit, approve publication, or expand scope.
