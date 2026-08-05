@@ -1,0 +1,263 @@
+import importlib.util
+import json
+import re
+import subprocess
+import tempfile
+import unittest
+from argparse import Namespace
+from pathlib import Path
+
+SPEC = importlib.util.spec_from_file_location("codex_eval", Path(__file__).parents[1] / "codex_eval.py")
+M = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(M)
+
+
+class EvaluationTests(unittest.TestCase):
+    def case(self, kind="policy", **expected):
+        return {"id": "x", "kind": kind, "expected": {"hard_gate": True, "routing": {}, **expected}}
+
+    def trace(self, roles=(), commands=()):
+        agents = [{"role": role, "thread_id": f"thread-{role}", "runtime": {"model": "m", "effort": "e", "sandbox_policy": "s"}, "started_at": index * 2, "completed_at": index * 2 + 1, "outcome": "completed"} for index, role in enumerate(roles)]
+        identity = {"head": "a" * 40, "diff_sha256": "b" * 64}
+        return {"native_agents": agents, "runner_checks": list(commands), "runner_identity": {"before": identity.copy(), "after": identity.copy()}, "candidate_write_events": 0, "child_write_capable_attempts": 0, "unknown": [], "health": {"ok": True, "missing": []}}
+
+    def test_manifest_is_valid_and_policy_prompts_are_neutral(self):
+        manifest = M.load(M.ROOT / "manifest.json")
+        self.assertEqual(M.validate_manifest(manifest), [])
+        for case in manifest["cases"]:
+            if case["kind"] == "policy": self.assertIsNone(M.FORBIDDEN_POLICY_TOKENS.search(case["prompt"]))
+
+    def test_validator_rejects_forbidden_policy_token(self):
+        manifest = json.loads(json.dumps(M.load(M.ROOT / "manifest.json")))
+        manifest["cases"][4]["prompt"] = "Delegate this typo."
+        self.assertIn("forbidden policy token: policy-typo-direct", M.validate_manifest(manifest))
+
+    def test_runtime_match_mismatch_and_missing(self):
+        expected = {"runtime": [{"role": "qa-runner", "model": "m", "effort": "e", "sandbox_type": "s"}]}
+        good = self.trace(["qa-runner"])
+        self.assertEqual(M.grade(self.case(**expected), {}, {}, good, None)["hard_status"], "PASS")
+        good["native_agents"][0]["runtime"]["model"] = "bad"
+        self.assertEqual(M.grade(self.case(**expected), {}, {}, good, None)["hard_status"], "FAIL")
+        good["native_agents"][0]["runtime"] = {}
+        self.assertEqual(M.grade(self.case(**expected), {}, {}, good, None)["hard_status"], "UNKNOWN")
+
+    def test_required_command_is_bound_to_owner_role(self):
+        command = {"command": "git diff --check", "exit_code": 1}
+        case = self.case(kind="plumbing", runner_commands=[{"command": "git diff --check", "exit_code": 0}])
+        self.assertEqual(M.grade(case, {}, {}, self.trace(commands=[command]), None)["hard_status"], "FAIL")
+        command["exit_code"] = 0
+        self.assertEqual(M.grade(case, {}, {}, self.trace(commands=[command]), None)["hard_status"], "PASS")
+
+    def test_plumbing_routing_is_a_hard_contract(self):
+        case = self.case(kind="plumbing", routing={"none_of": ["deep-reasoner"]})
+        self.assertEqual(M.grade(case, {}, {}, self.trace(["deep-reasoner"]), None)["hard_status"], "FAIL")
+
+    def test_lifecycle_requires_serial_completion(self):
+        case = self.case(routing={"all_of": ["qa-runner", "deep-reasoner"], "ordered_roles": ["qa-runner", "deep-reasoner"]}, require_serial_completion=True, require_same_identity=True)
+        trace = self.trace(["qa-runner", "deep-reasoner"])
+        self.assertEqual(M.grade(case, {}, {}, trace, None)["hard_status"], "PASS")
+        trace["child_write_capable_attempts"] = 1
+        self.assertEqual(M.grade(case, {}, {}, trace, None)["hard_status"], "FAIL")
+        trace["child_write_capable_attempts"] = 0
+        trace["native_agents"][0]["completed_at"] = 99
+        self.assertEqual(M.grade(case, {}, {}, trace, None)["hard_status"], "FAIL")
+        trace["native_agents"][0]["outcome"] = "aborted"
+        self.assertEqual(M.grade(case, {}, {}, trace, None)["hard_status"], "UNKNOWN")
+
+    def test_identity_missing_mismatch_and_match(self):
+        case = self.case(routing={"ordered_roles": ["qa-runner", "deep-reasoner"]}, require_same_identity=True)
+        trace = self.trace(["qa-runner", "deep-reasoner"])
+        del trace["runner_identity"]
+        self.assertEqual(M.grade(case, {}, {}, trace, None)["hard_status"], "UNKNOWN")
+        trace = self.trace(["qa-runner", "deep-reasoner"])
+        trace["runner_identity"]["after"]["head"] = "c" * 40
+        self.assertEqual(M.grade(case, {}, {}, trace, None)["hard_status"], "FAIL")
+        trace = self.trace(["qa-runner", "deep-reasoner"])
+        self.assertEqual(M.grade(case, {}, {}, trace, None)["hard_status"], "PASS")
+
+    def test_trace_evidence_lifecycle_and_child_role_parse(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "child.jsonl"
+            source.write_text("\n".join([
+                '{"type":"session_meta","timestamp":"2026-08-05T00:00:00Z","payload":{"id":"child","source":{"subagent":{"thread_spawn":{"agent_role":"qa-runner"}}}}}',
+                '{"type":"turn_context","payload":{"model":"m","effort":"e","sandbox_policy":"s"}}',
+                '{"type":"response_item","payload":{"type":"function_call","name":"exec","id":"head","arguments":{"cmd":"git rev-parse HEAD"}}}',
+                '{"type":"response_item","payload":{"type":"function_call_output","call_id":"head","output":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}',
+                '{"type":"response_item","payload":{"type":"function_call","name":"exec","id":"diff","arguments":{"cmd":"git diff --binary | shasum -a 256"}}}',
+                '{"type":"response_item","payload":{"type":"function_call_output","call_id":"diff","output":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}',
+                '{"type":"turn.completed","timestamp":"2026-08-05T00:00:01Z"}'
+            ]) + "\n")
+            output = Path(directory) / "out"
+            output.mkdir()
+            paths, _ = M.write_session_evidence([source], output)
+            trace = M.normalize_trace(paths)
+            self.assertEqual(trace["native_agents"][0]["role"], "qa-runner")
+            self.assertEqual(trace["native_agents"][0]["completed_at"], "2026-08-05T00:00:01Z")
+            self.assertEqual(trace["native_agents"][0]["outcome"], "completed")
+            self.assertEqual(trace["child_write_capable_attempts"], 2)
+
+    def test_real_0146_exec_shape_survives_allowlist(self):
+        source = Path(__file__).parent / "fixtures" / "real-0146-exec-child.jsonl"
+        with tempfile.TemporaryDirectory() as directory:
+            paths, secrets = M.write_session_evidence([source], Path(directory))
+            trace = M.normalize_trace(paths)
+            self.assertEqual(secrets, [])
+            self.assertIn("git diff --check", paths[0].read_text())
+            self.assertEqual(trace["native_agents"][0]["outcome"], "completed")
+            self.assertEqual(trace["child_write_capable_attempts"], 1)
+
+    def test_invalid_or_unknown_tool_evidence_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "session.jsonl"
+            source.write_text('not-json\n{"type":"response_item","payload":{"type":"function_call","name":"future_tool","id":"x"}}\n')
+            output = Path(directory) / "out"
+            output.mkdir()
+            paths, _ = M.write_session_evidence([source], output)
+            trace = M.normalize_trace(paths)
+            self.assertEqual({item["reason"] for item in trace["unknown"]}, {"invalid-json", "unknown-tool"})
+
+    def test_unknown_cli_event_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            events, _ = M.write_events_evidence('{"type":"future.event"}\n', output)
+            trace = M.normalize_trace([], events)
+            self.assertIn("unknown-event-type", {item["reason"] for item in trace["unknown"]})
+
+    def summary(self, statuses, *, dry=False, drift=False):
+        results = []
+        for status in statuses:
+            results.append({"case": "policy-x", "kind": "policy", "case_digest": "case", "grade": {"hard_gate": True, "hard_status": status, "behavioral_status": status}})
+        return {"runner_sha256": "runner", "manifest_sha256": "manifest", "config_digest": "config", "suite": "full", "model": "m", "cli_adapter": "x", "dry_run": dry, "source_drift": drift, "results": results}
+
+    def test_compare_mixed_hard_baseline_is_inconclusive_not_regression(self):
+        report = M.compare_summaries(self.summary(["PASS", "UNKNOWN"]), self.summary(["FAIL", "FAIL"]), M.wilson, .2)
+        self.assertEqual(report["status"], "INCONCLUSIVE")
+        self.assertEqual(report["cases"][0]["hard_comparison"], "INCONCLUSIVE")
+
+    def test_compare_preserves_repetitions_and_wilson_rule(self):
+        baseline, candidate = self.summary(["FAIL"] * 10), self.summary(["PASS"] * 10)
+        report = M.compare_summaries(baseline, candidate, M.wilson, .2)
+        case = report["cases"][0]
+        self.assertEqual(case["baseline"]["n"], 10)
+        self.assertEqual(case["candidate"]["n"], 10)
+        self.assertEqual(case["behavioral"], "IMPROVED")
+
+    def test_compare_excludes_infra_and_skip(self):
+        report = M.compare_summaries(self.summary(["PASS", "INFRA_ERROR", "SKIP"]), self.summary(["FAIL", "INFRA_ERROR", "SKIP"]), M.wilson, .2)
+        self.assertEqual(report["cases"][0]["baseline"]["n"], 1)
+        self.assertEqual(report["cases"][0]["candidate"]["n"], 1)
+
+    def test_candidate_infra_error_is_inconclusive_not_regression(self):
+        report = M.compare_summaries(self.summary(["PASS"]), self.summary(["INFRA_ERROR"]), M.wilson, .2)
+        self.assertEqual(report["confounders"], [])
+        self.assertEqual(report["status"], "INCONCLUSIVE")
+        self.assertEqual(report["cases"][0]["hard_comparison"], "INCONCLUSIVE")
+
+    def test_candidate_fail_with_infra_is_still_regression(self):
+        report = M.compare_summaries(self.summary(["PASS"]), self.summary(["FAIL", "INFRA_ERROR"]), M.wilson, .2)
+        self.assertEqual(report["status"], "REGRESSION")
+
+    def test_compare_refuses_dry_or_drift_as_confounded(self):
+        self.assertIn("dry_run", M.compare_summaries(self.summary(["PASS"], dry=True), self.summary(["PASS"]), M.wilson, .2)["confounders"])
+        self.assertIn("source_drift", M.compare_summaries(self.summary(["PASS"], drift=True), self.summary(["PASS"]), M.wilson, .2)["confounders"])
+        baseline, candidate = self.summary(["PASS"]), self.summary(["PASS"])
+        baseline["candidate_hashes"], candidate["candidate_hashes"] = {"a": "1"}, {"a": "2"}
+        self.assertNotIn("source_drift", M.compare_summaries(baseline, candidate, M.wilson, .2)["confounders"])
+
+    def test_evidence_root_detects_tamper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / "grade.json").write_text('{"ok":true}\n')
+            summary = self.summary(["PASS"])
+            M.write_summary_attestation(output, summary)
+            root = M.write_evidence_index(output)
+            summary["evidence_root"] = root
+            self.assertTrue(M.verify_run(output, summary))
+            summary["results"][0]["grade"]["hard_status"] = "FAIL"
+            self.assertFalse(M.verify_run(output, summary))
+            summary["results"][0]["grade"]["hard_status"] = "PASS"
+            (output / "grade.json").write_text('{"ok":false}\n')
+            self.assertFalse(M.verify_run(output, summary))
+
+    def test_promote_refuses_dry_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory) / "run"; run.mkdir()
+            (run / "grade.json").write_text("{}")
+            root = M.write_evidence_index(run)
+            M.dump(run / "summary.json", {**self.summary(["SKIP"], dry=True), "evidence_root": root})
+            self.assertEqual(M.promote(Namespace(run=str(run), name="test-never")), 2)
+        self.assertEqual(M.promote(Namespace(run="missing", name="../escape")), 2)
+
+    def test_factcheck_keeps_policy_observation_separate_from_explicit(self):
+        summary = self.summary(["UNKNOWN"])
+        summary["results"].append({"case": "plumbing-explicit-qa", "kind": "plumbing", "actual_child_runtime": [], "grade": {"hard_status": "PASS", "behavioral_status": "NOT_APPLICABLE"}})
+        facts = M.factcheck(summary)
+        self.assertEqual(facts["claims"][0]["outcome"], "doc_only")
+        self.assertIn("explicit_subagent_support", facts["observations"])
+
+    def test_factcheck_wires_guidance_claim_to_policy_routing(self):
+        summary = self.summary(["PASS", "FAIL"])
+        facts = M.factcheck(summary)
+        guidance = next(claim for claim in facts["claims"] if claim["id"] == "subagents-guidance-trigger")
+        self.assertEqual(guidance["outcome"], "confirmed")
+        summary = self.summary(["SKIP"])
+        facts = M.factcheck(summary)
+        guidance = next(claim for claim in facts["claims"] if claim["id"] == "subagents-guidance-trigger")
+        self.assertEqual(guidance["outcome"], "doc_only")
+
+    def test_infra_diagnostic_is_categorized_and_redacted(self):
+        diagnostic = M.infra_diagnostic(1, '{"type":"error","message":"rate limit for /Users/alice/project"}', "")
+        self.assertEqual(diagnostic["category"], "rate_limit")
+        self.assertNotIn("excerpt", diagnostic)
+
+    def test_rule_files_stay_in_sync_between_claude_and_codex(self):
+        claude = (M.REPO / "CLAUDE.md").read_text()
+        codex_agents = (M.REPO / "codex" / "AGENTS.md").read_text()
+        synonyms = (r"\bDispatch\b", "Spawn"), ("dispatch a configured role", "spawn a named custom agent")
+        normalized_claude = claude
+        normalized_codex = codex_agents
+        for pattern, replacement in synonyms:
+            normalized_claude = re.sub(pattern, replacement, normalized_claude)
+            normalized_codex = re.sub(pattern, replacement, normalized_codex)
+        self.assertEqual(normalized_claude, normalized_codex, "CLAUDE.md and codex/AGENTS.md drifted; re-sync both files")
+
+    def test_declared_runtime_reads_toml_and_rejects_missing_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            snap = Path(directory)
+            (snap / "AGENTS.md").write_text("rules\n")
+            agents = snap / "agents"
+            agents.mkdir()
+            (agents / "deep-reasoner.toml").write_text('name = "deep-reasoner"\nmodel = "gpt-x"\nmodel_reasoning_effort = "high"\nsandbox_mode = "read-only"\n')
+            declared = M.declared_runtime(snap)
+            self.assertEqual(declared["deep-reasoner"], {"model": "gpt-x", "effort": "high", "sandbox_type": "read-only"})
+            (agents / "bad.toml").write_text('name = "bad"\nmodel = "gpt-x"\n')
+            with self.assertRaises(RuntimeError):
+                M.declared_runtime(snap)
+
+    def test_resolve_runtime_fills_values_from_declared(self):
+        declared = {"qa-runner": {"model": "gpt-x", "effort": "low", "sandbox_type": "workspace-write"}}
+        resolved = M.resolve_runtime({"runtime": [{"role": "qa-runner"}]}, declared)
+        self.assertEqual(resolved["runtime"][0], {"role": "qa-runner", "model": "gpt-x", "effort": "low", "sandbox_type": "workspace-write"})
+        bare = {}
+        self.assertIs(M.resolve_runtime(bare, declared), bare)
+
+    def test_validator_rejects_inline_runtime_values_in_v3(self):
+        manifest = json.loads(json.dumps(M.load(M.ROOT / "manifest.json")))
+        manifest["cases"][1]["expected"]["runtime"][0]["model"] = "gpt-5.6-sol"
+        self.assertIn("bad runtime: plumbing-explicit-deep", M.validate_manifest(manifest))
+
+    def test_rev_list_runner_check_detects_new_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            git = "git"
+            M.fixture(work, "direct", git)
+            adapter = {"tools": {"git": git, "python3": "python3"}}
+            expected = {"runner_commands": [{"command": "git rev-list --count HEAD", "exit_code": 0}]}
+            checks = M._runner_checks(work, expected, adapter)
+            self.assertEqual(checks[0]["exit_code"], 0)
+            subprocess.run([git, "-c", "user.name=eval", "-c", "user.email=eval@example.invalid", "commit", "-qm", "extra", "--allow-empty"], cwd=work, check=True)
+            checks = M._runner_checks(work, expected, adapter)
+            self.assertEqual(checks[0]["exit_code"], 1)
+
+
+if __name__ == "__main__": unittest.main()

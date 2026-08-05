@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "retrieved_at": "2026-08-05",
+  "status_vocabulary": ["CONFIRMED", "DOC_ONLY", "RUNTIME_ONLY", "CONFLICT", "UNKNOWN"],
+  "claims": [
+    {"id":"agents-discovery","claim":"Codex builds AGENTS.md guidance from CODEX_HOME and project directories at run/session start, with nearer project files later in the instruction chain.","url":"https://learn.chatgpt.com/docs/agent-configuration/agents-md","section":"How Codex discovers guidance","status":"DOC_ONLY"},
+    {"id":"exec-json-events","claim":"codex exec --json writes a JSON Lines event stream containing turn and item events.","url":"https://learn.chatgpt.com/docs/developer-commands?surface=cli#cli-codex-exec","section":"Make output machine-readable","status":"DOC_ONLY"},
+    {"id":"subagents-direct-request","claim":"Current local Codex releases can start a subagent after a direct request naming that workflow.","url":"https://learn.chatgpt.com/docs/agent-configuration/subagents","section":"Triggering subagent workflows","status":"DOC_ONLY"},
+    {"id":"subagents-guidance-trigger","claim":"Applicable project or skill instructions can trigger a subagent workflow without a direct role name in the user prompt.","url":"https://learn.chatgpt.com/docs/agent-configuration/subagents","section":"Triggering subagent workflows","status":"DOC_ONLY"},
+    {"id":"exec-least-privilege","claim":"codex exec defaults to read-only and supports explicit sandbox selection; automation should use the least permissions needed.","url":"https://learn.chatgpt.com/docs/developer-commands?surface=cli#permissions-and-safety","section":"Permissions and safety","status":"DOC_ONLY"},
+    {"id":"custom-agent-runtime-overrides","claim":"Custom agent definitions can specify model, reasoning effort, and sandbox controls.","url":"https://learn.chatgpt.com/docs/agent-configuration/subagents","section":"Custom agents; Approvals and sandbox controls","status":"DOC_ONLY"}
+  ]
+}
