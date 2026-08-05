@@ -4,12 +4,17 @@ import re
 import subprocess
 import tempfile
 import unittest
+import urllib.parse
 from argparse import Namespace
 from pathlib import Path
+from unittest import mock
 
 SPEC = importlib.util.spec_from_file_location("codex_eval", Path(__file__).parents[1] / "codex_eval.py")
 M = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(M)
+
+from lib.adapters import CodexAdapter, GrokAdapter  # noqa: E402
+from lib.evidence import write_events_evidence, write_session_evidence  # noqa: E402
 
 
 class EvaluationTests(unittest.TestCase):
@@ -89,7 +94,7 @@ class EvaluationTests(unittest.TestCase):
             ]) + "\n")
             output = Path(directory) / "out"
             output.mkdir()
-            paths, _ = M.write_session_evidence([source], output)
+            paths, _ = write_session_evidence([source], output)
             trace = M.normalize_trace(paths)
             self.assertEqual(trace["native_agents"][0]["role"], "qa-runner")
             self.assertEqual(trace["native_agents"][0]["completed_at"], "2026-08-05T00:00:01Z")
@@ -99,7 +104,7 @@ class EvaluationTests(unittest.TestCase):
     def test_real_0146_exec_shape_survives_allowlist(self):
         source = Path(__file__).parent / "fixtures" / "real-0146-exec-child.jsonl"
         with tempfile.TemporaryDirectory() as directory:
-            paths, secrets = M.write_session_evidence([source], Path(directory))
+            paths, secrets = write_session_evidence([source], Path(directory))
             trace = M.normalize_trace(paths)
             self.assertEqual(secrets, [])
             self.assertIn("git diff --check", paths[0].read_text())
@@ -112,14 +117,14 @@ class EvaluationTests(unittest.TestCase):
             source.write_text('not-json\n{"type":"response_item","payload":{"type":"function_call","name":"future_tool","id":"x"}}\n')
             output = Path(directory) / "out"
             output.mkdir()
-            paths, _ = M.write_session_evidence([source], output)
+            paths, _ = write_session_evidence([source], output)
             trace = M.normalize_trace(paths)
             self.assertEqual({item["reason"] for item in trace["unknown"]}, {"invalid-json", "unknown-tool"})
 
     def test_unknown_cli_event_fails_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
-            events, _ = M.write_events_evidence('{"type":"future.event"}\n', output)
+            events, _ = write_events_evidence('{"type":"future.event"}\n', output)
             trace = M.normalize_trace([], events)
             self.assertIn("unknown-event-type", {item["reason"] for item in trace["unknown"]})
 
@@ -228,11 +233,11 @@ class EvaluationTests(unittest.TestCase):
             agents = snap / "agents"
             agents.mkdir()
             (agents / "deep-reasoner.toml").write_text('name = "deep-reasoner"\nmodel = "gpt-x"\nmodel_reasoning_effort = "high"\nsandbox_mode = "read-only"\n')
-            declared = M.declared_runtime(snap)
+            declared = CodexAdapter().declared_runtime(snap)
             self.assertEqual(declared["deep-reasoner"], {"model": "gpt-x", "effort": "high", "sandbox_type": "read-only"})
             (agents / "bad.toml").write_text('name = "bad"\nmodel = "gpt-x"\n')
             with self.assertRaises(RuntimeError):
-                M.declared_runtime(snap)
+                CodexAdapter().declared_runtime(snap)
 
     def test_resolve_runtime_fills_values_from_declared(self):
         declared = {"qa-runner": {"model": "gpt-x", "effort": "low", "sandbox_type": "workspace-write"}}
@@ -251,13 +256,120 @@ class EvaluationTests(unittest.TestCase):
             work = Path(directory)
             git = "git"
             M.fixture(work, "direct", git)
-            adapter = {"tools": {"git": git, "python3": "python3"}}
+            adapter = CodexAdapter()
+            adapter.info = {"tools": {"git": git, "python3": "python3"}}
             expected = {"runner_commands": [{"command": "git rev-list --count HEAD", "exit_code": 0}]}
             checks = M._runner_checks(work, expected, adapter)
             self.assertEqual(checks[0]["exit_code"], 0)
             subprocess.run([git, "-c", "user.name=eval", "-c", "user.email=eval@example.invalid", "commit", "-qm", "extra", "--allow-empty"], cwd=work, check=True)
             checks = M._runner_checks(work, expected, adapter)
             self.assertEqual(checks[0]["exit_code"], 1)
+
+    # -- Grok adapter ----------------------------------------------------
+
+    def test_grok_declared_runtime_reads_frontmatter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            snap = Path(directory)
+            (snap / "AGENTS.md").write_text("rules\n")
+            agents = snap / "agents"
+            agents.mkdir()
+            (agents / "deep-reasoner.md").write_text('---\nname: deep-reasoner\nmodel: grok-4.5\neffort: high\nprompt_mode: full\npermission_mode: plan\nagents_md: true\n---\ninstructions\n')
+            declared = GrokAdapter().declared_runtime(snap)
+            self.assertEqual(declared["deep-reasoner"], {"model": "grok-4.5", "effort": "high", "sandbox_type": "read-only"})
+            (agents / "bad.md").write_text('---\nname: bad\nmodel: grok-4.5\n---\n')
+            with self.assertRaises(RuntimeError):
+                GrokAdapter().declared_runtime(snap)
+
+    def test_grok_stream_evidence_maps_end_and_writes(self):
+        adapter = GrokAdapter()
+        with tempfile.TemporaryDirectory() as directory:
+            path, secrets = adapter.stream_evidence('{"type":"tool_call","toolName":"search_replace","rawInput":{}}\n{"type":"usage","usage":{}}\n{"type":"end","sessionId":"s-1","usage":{"input_tokens":5}}\n{"type":"future.event"}\n', Path(directory))
+            trace = M.normalize_trace([], path)
+            self.assertEqual(adapter.session_id, "s-1")
+            self.assertEqual(trace["candidate_write_events"], 1)
+            self.assertEqual(trace["tokens"]["input_tokens"], 5)
+            self.assertNotIn("exec-turn.completed", trace["health"]["missing"])
+            self.assertIn("unknown-event-type", {item["reason"] for item in trace["unknown"]})
+            self.assertEqual(secrets, [])
+
+    def test_grok_session_evidence_maps_spawn_role_and_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            work = root / "work"
+            work.mkdir()
+            fake_home = root / "fake-home"
+            encoded = urllib.parse.quote(str(work.resolve()), safe="")
+            parent_dir = fake_home / ".grok" / "sessions" / encoded / "parent-111"
+            child_dir = fake_home / ".grok" / "sessions" / encoded / "child-222"
+            parent_dir.mkdir(parents=True)
+            child_dir.mkdir(parents=True)
+            (parent_dir / "chat_history.jsonl").write_text("\n".join([
+                '{"type":"user","content":"Spawn fast-worker to append a line to NOTES.md."}',
+                '{"type":"assistant","content":"","model_id":"grok-4.5-build","reasoning_effort":"high","tool_calls":[{"id":"c1","name":"spawn_subagent","arguments":"{\\"subagent_type\\":\\"fast-worker\\",\\"capability_mode\\":\\"read-write\\"}"}]}',
+                '{"type":"assistant","content":"","model_id":"grok-4.5-build","reasoning_effort":"high","tool_calls":[{"id":"c2","name":"get_command_or_subagent_output","arguments":"{\\"task_ids\\":[\\"child-222\\"]}"}]}',
+                '{"type":"tool_result","tool_call_id":"c2","content":"appended one line"}',
+            ]) + "\n")
+            (parent_dir / "updates.jsonl").write_text('{"timestamp": 1000}\n{"timestamp": 2000}\n')
+            (parent_dir / "prompt_context.json").write_text(json.dumps({"agents_md_files": [{"file_name": "AGENTS.md", "file_path": str(work) + "/AGENTS.md", "content": "marker-content"}]}))
+            (child_dir / "chat_history.jsonl").write_text("\n".join([
+                '{"type":"user","content":"Append a line to NOTES.md."}',
+                '{"type":"assistant","content":"","model_id":"grok-4.5-build","reasoning_effort":"medium","tool_calls":[{"id":"x1","name":"search_replace","arguments":"{\\"file_path\\":\\"NOTES.md\\"}"}]}',
+            ]) + "\n")
+            (child_dir / "updates.jsonl").write_text('{"timestamp": 1500}\n{"timestamp": 1800}\n')
+            snap = root / "snap"
+            snap.mkdir()
+            (snap / "AGENTS.md").write_text("marker-content")
+            events = root / "events.jsonl"
+            events.write_text('{"type":"turn.completed","usage":{}}\n')
+            with mock.patch("pathlib.Path.home", return_value=fake_home):
+                adapter = GrokAdapter()
+                adapter.session_id = "parent-111"
+                adapter.snapshot_path = str(snap)
+                paths, secrets = adapter.session_evidence(work, root / "out")
+            trace = M.normalize_trace(paths, events)
+            self.assertEqual(secrets, [])
+            self.assertEqual(trace["unknown"], [])
+            self.assertTrue(trace["health"]["ok"])
+            agent = trace["native_agents"][0]
+            self.assertEqual(agent["role"], "fast-worker")
+            self.assertEqual(agent["runtime"], {"model": "grok-4.5-build", "effort": "medium", "sandbox_policy": {"type": "workspace-write"}})
+            self.assertEqual(agent["outcome"], "completed")
+            self.assertEqual(trace["child_write_capable_attempts"], 1)
+
+    def test_grok_runtime_contract_family_and_capability_ceiling(self):
+        adapter = GrokAdapter()
+        declared = {"model": "grok-4.5", "effort": "medium", "sandbox_type": "workspace-write"}
+        build = {"model": "grok-4.5-build", "effort": "medium", "sandbox_policy": {"type": "workspace-write"}}
+        self.assertTrue(adapter.runtime_contract(declared, build))
+        tighter = {**build, "sandbox_policy": {"type": "read-only"}}
+        self.assertTrue(adapter.runtime_contract(declared, tighter))
+        broader = {"model": "grok-4.5-build", "effort": "medium", "sandbox_policy": {"type": "read-write"}}
+        self.assertTrue(adapter.runtime_contract({"model": "grok-4.5", "effort": "medium", "sandbox_type": "read-only"}, broader) is False)
+        wrong_family = {"model": "grok-3", "effort": "medium", "sandbox_policy": {"type": "workspace-write"}}
+        self.assertFalse(adapter.runtime_contract(declared, wrong_family))
+        wrong_effort = {**build, "effort": "high"}
+        self.assertFalse(adapter.runtime_contract(declared, wrong_effort))
+
+    def test_grok_injection_check_fails_closed_on_shadowed_agents_md(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            work = root / "work"
+            work.mkdir()
+            fake_home = root / "fake-home"
+            parent_dir = fake_home / ".grok" / "sessions" / urllib.parse.quote(str(work.resolve()), safe="") / "parent-111"
+            parent_dir.mkdir(parents=True)
+            (parent_dir / "chat_history.jsonl").write_text('{"type":"assistant","content":"","model_id":"grok-4.5-build","reasoning_effort":"high","tool_calls":[]}\n')
+            (parent_dir / "prompt_context.json").write_text(json.dumps({"agents_md_files": [{"file_name": "AGENTS.md", "file_path": "/somewhere/else/AGENTS.md", "content": "shadowed"}]}))
+            snap = root / "snap"
+            snap.mkdir()
+            (snap / "AGENTS.md").write_text("candidate-content")
+            with mock.patch("pathlib.Path.home", return_value=fake_home):
+                adapter = GrokAdapter()
+                adapter.session_id = "parent-111"
+                adapter.snapshot_path = str(snap)
+                paths, _ = adapter.session_evidence(work, root / "out")
+            trace = M.normalize_trace(paths)
+            self.assertIn("candidate-not-injected", {item["reason"] for item in trace["unknown"]})
 
 
 if __name__ == "__main__": unittest.main()

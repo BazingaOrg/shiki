@@ -8,10 +8,13 @@ python3 evals/codex/codex_eval.py run --suite plumbing --dry-run
 SHIKI_CODEX_AUTH_FILE="$HOME/.codex/auth.json" python3 evals/codex/codex_eval.py run --suite policy --case policy-typo-direct --timeout 180
 python3 evals/codex/codex_eval.py run --suite smoke --dry-run
 SHIKI_CODEX_AUTH_FILE="$HOME/.codex/auth.json" python3 evals/codex/codex_eval.py run --suite full --repetitions 5
+python3 evals/codex/codex_eval.py run --adapter grok --suite smoke
 python3 evals/codex/codex_eval.py compare --baseline evals/codex/baselines/reviewed.json --candidate evals/codex/.runs/RUN_ID
 python3 evals/codex/codex_eval.py promote --run evals/codex/.runs/RUN_ID --name reviewed-2026-08-05
 python3 -m unittest discover -s evals/codex/tests
 ```
+
+`run --adapter` 选择被测 CLI（默认 `codex`）。manifest/fixture/compare/promote 与 adapter 无关；summary 的 `adapter`/`cli_version` 字段进入 confounder，跨 adapter 的比较会被判 `CONFOUNDED`。
 
 每个 case 显式标记 `kind` 与 `suites`。`plumbing` suite 使用显式命名的 direct/deep/fast/qa 探针验证管线；`policy` prompt 静态拒绝 `delegate`、`agent`、`role`、命名角色与 `subagent`，用中性任务衡量路由。`smoke` 是低成本子集，`full` 包含所有 case。
 
@@ -26,6 +29,19 @@ policy 覆盖 typo 直接处理、跨模块并发架构分析、五份 config �
 每个 run 有由 allowlisted per-case artifacts 与 `summary-core.json` 算出的 `evidence_root`；core 绑定成绩、候选 hash、配置、fixture 与运行 provenance，`summary.json`、report 和 index 不参与自身哈希。`compare` 会同时验证 evidence root 与 summary/core 一致性。`promote` 只接受安全 basename，并拒绝任何 dry、漂移、infra、UNKNOWN、硬失败、策略不完整或无效 evidence；生成的最小 baseline 另带 canonical digest，绝不自动选择旧 run。
 
 `factcheck.json` 将显式子 agent 支持、无委派词 policy prompt 的实际路由，以及 custom-agent runtime override 分为独立 observations。claim outcome 为 `doc_only`、`runtime_only`、`confirmed`、`conflict` 或 `unknown`；显式 prompt 的成功不构成 policy-routing 确认，policy 路由的 PASS/FAIL 单独驱动 `subagents-guidance-trigger` claim 的 `confirmed`/`conflict`。
+
+## Adapter 模型（codex / grok）
+
+评测核心（manifest 契约、fixture、grading、compare、evidence root、promote）与 CLI 无关；`lib/adapters/` 提供 per-CLI 传输。
+
+**codex（默认）**：`codex exec --json` 事件流 + 临时 `CODEX_HOME`（候选 AGENTS.md 与 agent TOML 复制进临时 home，auth 经 `SHIKI_CODEX_AUTH_FILE` 复制成 0600）。会话隔离完整。
+
+**grok**：`grok --single --output-format streaming-json`（ACP 事件流，`end` 事件携带 session id）+ `~/.grok/sessions/<url-quoted-cwd>/<session-id>/` 磁盘会话（`chat_history.jsonl` 的 assistant 消息带 `model_id`/`reasoning_effort`/结构化 tool_calls，`updates.jsonl` 提供生命周期时间戳，`prompt_context.json` 记录实际注入的 AGENTS.md）。差异：
+
+- **隔离是 cwd 级的**：grok 使用真实 `~/.grok`（全局 config/rules/agents/skills 全部加载，这是被测环境本身）；候选注入通过把 `grok/AGENTS.md` 复制进 fixture cwd（被当作 project instruction 加载）与 `grok/agents/*.md` 复制进 `<cwd>/.grok/agents/`（project agent 优先于 user agent）。`prompt_context.json` 反证注入，内容不匹配或未注入 → `candidate-not-injected` anomaly → `UNKNOWN`。
+- **runtime 契约**：子 agent 的 model/effort 观测自子会话 chat_history；sandbox 观测自父会话 `spawn_subagent` 的 `capability_mode`。声明值来自 profile frontmatter（`permission_mode: plan` → `read-only`，其余 → `workspace-write`）。grok 契约与 codex 的精确相等不同：model 用族匹配（CLI 接受 `grok-4.5`，会话证据记录部署 build `grok-4.5-build`）；capability 是模型 spawn 时自选的 coarse filter（`read-only`/`read-write`/`execute`/`all`），声明值是**上限**——观测不得宽于声明（`read-only`/`execute` 满足 `workspace-write` 上限，反向不成立）。effort 仍精确比较。
+- **生命周期**：子会话完成证据是父会话对 `get_command_or_subagent_output` 的 tool_result；无完成证据的子会话以 `UNKNOWN` 处理（fail-closed）。
+- 运行环境：`--permission-mode auto`、`--disable-web-search`、`--no-memory`、主模型 `-m` + `--reasoning-effort`；子 agent 行为由 profile 决定。
 
 ## 官方事实边界
 

@@ -78,6 +78,13 @@ def secret_patterns(value: Any) -> list[str]:
     return sorted(pattern for pattern in found if pattern != "local-path")
 
 
+def usage_values(value: Any) -> dict[str, int]:
+    """Token counters are numbers, never secrets: keep int values without key redaction."""
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): item for key, item in value.items() if isinstance(item, int)}
+
+
 def _session_record(event: dict[str, Any], patterns: set[str]) -> dict[str, Any] | None:
     typ = event.get("type")
     payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
@@ -134,9 +141,10 @@ def _session_record(event: dict[str, Any], patterns: set[str]) -> dict[str, Any]
     return None
 
 
-def write_session_evidence(paths: list[Path], output: Path) -> tuple[list[Path], list[str]]:
+def write_records(paths: list[Path], output: Path, record_fn) -> tuple[list[Path], list[str]]:
+    """Write per-line evidence records for raw session files via record_fn(event, patterns) -> record | None."""
     target = output / "session-evidence"
-    target.mkdir(exist_ok=True)
+    target.mkdir(parents=True, exist_ok=True)
     secret_hits: set[str] = set()
     written: list[Path] = []
     for index, path in enumerate(paths):
@@ -148,7 +156,7 @@ def write_session_evidence(paths: list[Path], output: Path) -> tuple[list[Path],
                 lines.append(json.dumps({"type": "evidence_anomaly", "reason": "invalid-json"}))
                 continue
             patterns: set[str] = set()
-            record = _session_record(event, patterns)
+            record = record_fn(event, patterns)
             if record:
                 secret_hits.update(secret_patterns(record))
                 secret_hits.update(patterns)
@@ -157,6 +165,11 @@ def write_session_evidence(paths: list[Path], output: Path) -> tuple[list[Path],
         dest.write_text("\n".join(lines) + ("\n" if lines else ""))
         written.append(dest)
     return written, sorted(secret_hits)
+
+
+def write_session_evidence(paths: list[Path], output: Path) -> tuple[list[Path], list[str]]:
+    """Codex session evidence (raw codex session jsonl -> shared record format)."""
+    return write_records(paths, output, _session_record)
 
 
 def write_events_evidence(stdout: str, output: Path) -> tuple[Path, list[str]]:
@@ -177,7 +190,7 @@ def write_events_evidence(stdout: str, output: Path) -> tuple[Path, list[str]]:
             lines.append(json.dumps({"type": "evidence_anomaly", "reason": "unknown-item-type"}))
             continue
         if not item or item.get("type") in ALLOWED_ITEM_TYPES:
-            record = {"type": typ, "timestamp": event.get("timestamp"), "usage": _safe(event.get("usage"), patterns)}
+            record = {"type": typ, "timestamp": event.get("timestamp"), "usage": usage_values(event.get("usage"))}
             if item:
                 record["item"] = {"type": item.get("type"), "id": item.get("id"), "command": _safe(item.get("command"), patterns), "exit_code": item.get("exit_code"), "has_changes": item.get("type") == "file_change"}
             patterns.update(secret_patterns(record))
@@ -195,8 +208,8 @@ def summary_core(summary: dict[str, Any]) -> dict[str, Any]:
     return {
         key: summary.get(key)
         for key in (
-            "runner_sha256", "manifest_sha256", "repetitions", "suite", "model",
-            "cli_adapter", "cli_version", "executable_sha256", "toolchain_digest", "network_env_digest",
+            "runner_sha256", "manifest_sha256", "repetitions", "suite", "adapter", "model",
+            "cli_version", "executable_sha256", "toolchain_digest", "network_env_digest",
             "dry_run", "config_digest", "candidate_hashes", "metrics", "source_drift",
         )
     } | {"results": [{key: row.get(key) for key in result_keys} for row in summary.get("results", [])]}

@@ -16,17 +16,17 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parents[1]
-VERSION = re.compile(r"\b0\.146\.\d+\b")
 FORBIDDEN_POLICY_TOKENS = re.compile(r"\b(?:delegate|agent|role|deep-reasoner|fast-worker|qa-runner|subagent)\b", re.I)
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from lib.adapters import ADAPTERS, get_adapter
 from lib.common import ROLES, changed, digest, dump, files, load, redact_text, safe_relative, sha, utc
 from lib.compare import compare_summaries
-from lib.evidence import secret_patterns, verify_run, write_events_evidence, write_evidence_index, write_session_evidence, write_summary_attestation
+from lib.evidence import secret_patterns, verify_run, write_evidence_index, write_summary_attestation
 from lib.fixtures import fixture, git_state
-from lib.runtime import candidate_hashes, config, declared_runtime, env_for, env_provenance, run_process, snapshot_candidate, source_drift
+from lib.runtime import env_provenance
 from lib.trace import normalize_trace
 
 
@@ -56,22 +56,6 @@ def infra_diagnostic(returncode: int, stdout: str, stderr: str) -> dict[str, Any
     ) if any(needle in lowered for needle in needles)), "unknown")
     retry = re.search(r"try again at ([^.\n]+)", safe_text, re.I)
     return {"exit_code": returncode, "category": category, "retry_at": retry.group(1).strip() if retry else None}
-
-
-def adapter_info() -> tuple[dict[str, Any] | None, str | None]:
-    binary = shutil.which("codex")
-    if not binary:
-        return None, "codex executable not found"
-    probe = subprocess.run([binary, "--version"], capture_output=True, text=True)
-    rendered = (probe.stdout + probe.stderr).strip()
-    match = VERSION.search(rendered)
-    if probe.returncode or not match:
-        return None, f"unsupported codex version: {rendered or probe.returncode}"
-    tools = {name: shutil.which(name) for name in ("git", "python3")}
-    if any(path is None for path in tools.values()):
-        return None, "required evaluator tool not found"
-    tool_hashes = {name: sha(Path(path)) for name, path in tools.items() if path}
-    return {"binary": binary, "version": match.group(0), "sha256": sha(Path(binary)), "tools": tools, "toolchain_digest": digest(tool_hashes)}, None
 
 
 def _bad_paths(value: Any) -> bool:
@@ -132,16 +116,21 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
     return errors or ([] if manifest.get("cases") else ["no cases"])
 
 
-def _runtime_status(expected: dict[str, Any], trace: dict[str, Any]) -> tuple[str, str]:
+def _runtime_status(expected: dict[str, Any], trace: dict[str, Any], contract: Any = None) -> tuple[str, str]:
+    check = contract or _exact_runtime
     for wanted in expected.get("runtime", []):
         actual = next((item.get("runtime") for item in trace["native_agents"] if item["role"] == wanted["role"]), None)
         if not actual or any(actual.get(key) is None for key in ("model", "effort", "sandbox_policy")):
             return "UNKNOWN", "runtime contract missing"
-        sandbox = actual["sandbox_policy"]
-        sandbox_type = sandbox.get("type") if isinstance(sandbox, dict) else sandbox
-        if actual["model"] != wanted["model"] or actual["effort"] != wanted["effort"] or sandbox_type != wanted["sandbox_type"]:
+        if not check(wanted, actual):
             return "FAIL", "runtime contract mismatch"
     return "PASS", "runtime matched"
+
+
+def _exact_runtime(declared: dict[str, Any], actual: dict[str, Any]) -> bool:
+    sandbox = actual.get("sandbox_policy")
+    sandbox_type = sandbox.get("type") if isinstance(sandbox, dict) else sandbox
+    return actual.get("model") == declared["model"] and actual.get("effort") == declared["effort"] and sandbox_type == declared["sandbox_type"]
 
 
 def _normalize_command(value: Any) -> str:
@@ -186,7 +175,7 @@ def _routing_status(expected: dict[str, Any], trace: dict[str, Any]) -> tuple[st
     return "PASS", "routing matched"
 
 
-def grade(case: dict[str, Any], before: dict[str, str], after: dict[str, str], trace: dict[str, Any], infra: str | None, dry: bool = False) -> dict[str, Any]:
+def grade(case: dict[str, Any], before: dict[str, str], after: dict[str, str], trace: dict[str, Any], infra: str | None, dry: bool = False, contract: Any = None) -> dict[str, Any]:
     expected = case["expected"]
     paths = changed(before, after)
     result = {"hard_gate": expected.get("hard_gate", False), "changed_paths": paths}
@@ -199,7 +188,7 @@ def grade(case: dict[str, Any], before: dict[str, str], after: dict[str, str], t
     if trace.get("unknown"):
         return {**result, "hard_status": "UNKNOWN", "behavioral_status": "UNKNOWN", "status": "UNKNOWN", "reason": "unknown trace schema"}
     identity_status, identity_reason = _identity_status(expected, trace)
-    hard_checks = [_runtime_status(expected, trace), (identity_status, identity_reason)]
+    hard_checks = [_runtime_status(expected, trace, contract), (identity_status, identity_reason)]
     routing_status, routing_reason = _routing_status(expected, trace)
     if case["kind"] == "plumbing":
         hard_checks.append((routing_status, routing_reason))
@@ -224,17 +213,18 @@ def resolve_runtime(expected: dict[str, Any], declared: dict[str, dict[str, str]
     return {**expected, "runtime": [{"role": item["role"], **by_role[item["role"]]} for item in expected["runtime"]]}
 
 
-def _runner_checks(work: Path, expected: dict[str, Any], adapter: dict[str, Any]) -> list[dict[str, Any]]:
+def _runner_checks(work: Path, expected: dict[str, Any], adapter: Any) -> list[dict[str, Any]]:
+    tools = adapter.tools()
     commands = {
-        "git diff --check": [adapter["tools"]["git"], "diff", "--check"],
-        "python3 -m unittest test_auth.py": [adapter["tools"]["python3"], "-m", "unittest", "test_auth.py"],
+        "git diff --check": [tools["git"], "diff", "--check"],
+        "python3 -m unittest test_auth.py": [tools["python3"], "-m", "unittest", "test_auth.py"],
     }
     results = []
     for wanted in expected.get("runner_commands", []):
         command = wanted["command"]
         if command == "git rev-list --count HEAD":
             # Fixtures always start at exactly one commit; any new commit is a contract violation.
-            proc = subprocess.run([adapter["tools"]["git"], "rev-list", "--count", "HEAD"], cwd=work, capture_output=True, text=True)
+            proc = subprocess.run([tools["git"], "rev-list", "--count", "HEAD"], cwd=work, capture_output=True, text=True)
             results.append({"command": command, "exit_code": 0 if proc.stdout.strip() == "1" else 1})
             continue
         proc = subprocess.run(commands[command], cwd=work, capture_output=True, text=True)
@@ -242,43 +232,37 @@ def _runner_checks(work: Path, expected: dict[str, Any], adapter: dict[str, Any]
     return results
 
 
-def run_one(case: dict[str, Any], output: Path, dry: bool, model: str, effort: str, timeout: int, snapshot: dict[str, object], adapter: dict[str, Any], declared: dict[str, dict[str, str]]) -> dict[str, Any]:
-    work = Path(tempfile.mkdtemp(prefix="shiki-codex-fixture-"))
-    home = Path(tempfile.mkdtemp(prefix="shiki-codex-home-"))
+def run_one(case: dict[str, Any], output: Path, dry: bool, model: str, effort: str, timeout: int, snapshot: dict[str, object], adapter: Any, declared: dict[str, dict[str, str]]) -> dict[str, Any]:
+    work = Path(tempfile.mkdtemp(prefix="shiki-eval-fixture-"))
     started = time.monotonic()
     try:
         expected = resolve_runtime(case["expected"], declared)
-        fixture(work, case["fixture"], adapter["tools"]["git"])
-        config(home, Path(snapshot["path"]), effort)
-        final = home / "final.json"
-        schema = home / "final-schema.json"
-        dump(schema, {"type": "object", "additionalProperties": False, "required": ["reported_summary", "reported_delegation"], "properties": {"reported_summary": {"type": "string"}, "reported_delegation": {"type": "array", "items": {"type": "string"}}}})
+        fixture(work, case["fixture"], adapter.tools()["git"])
+        adapter.prepare(work, Path(snapshot["path"]), effort)
         before = files(work)
-        state_before = git_state(work, adapter["tools"]["git"])
-        argv = [adapter["binary"], "exec", "--strict-config", "--json", "--ignore-rules", "--color", "never", "-C", str(work), "-o", str(final), "--output-schema", str(schema), "--model", model]
-        dump(output / "invocation.json", {"argv": [redacted(item) for item in argv], "prompt_via": "stdin", "requested_model": model})
-        rc, stdout, stderr = (0, "", "dry run") if dry else run_process(argv, prompt=case["prompt"], env=env_for(home), cwd=work, timeout=timeout)
-        events, event_secrets = write_events_evidence(stdout, output)
-        sessions = sorted((home / "sessions").rglob("*.jsonl")) if (home / "sessions").exists() else []
-        evidence_sessions, session_secrets = write_session_evidence(sessions, output)
+        state_before = git_state(work, adapter.tools()["git"])
+        dump(output / "invocation.json", {"argv": [redacted(item) for item in adapter.invocation(work, case["prompt"], model, effort)], "prompt_via": adapter.prompt_via, "requested_model": model})
+        rc, stdout, stderr = (0, "", "dry run") if dry else adapter.run(work, case["prompt"], model, effort, timeout)
+        events, event_secrets = adapter.stream_evidence(stdout, output)
+        evidence_sessions, session_secrets = adapter.session_evidence(work, output)
         trace = normalize_trace(evidence_sessions, events)
         after = files(work)
-        state_after = git_state(work, adapter["tools"]["git"])
+        state_after = git_state(work, adapter.tools()["git"])
         trace["runner_identity"] = {"before": state_before, "after": state_after}
         trace["runner_checks"] = [] if dry or rc != 0 else _runner_checks(work, expected, adapter)
         dump(output / "trace.json", trace)
         dump(output / "before.json", {"hashes": before, "git": state_before})
         dump(output / "after.json", {"hashes": after, "git": state_after})
         secret_hits = sorted(set(event_secrets) | set(secret_patterns(stderr)) | set(session_secrets))
-        infra = ("secret scan: " + ",".join(secret_hits)) if secret_hits else (None if rc == 0 else f"codex exit {rc}")
+        infra = ("secret scan: " + ",".join(secret_hits)) if secret_hits else (None if rc == 0 else f"{adapter.name} exit {rc}")
         if rc != 0:
             dump(output / "infra.json", infra_diagnostic(rc, stdout, stderr))
-        graded = grade({**case, "expected": expected}, before, after, trace, infra, dry)
+        graded = grade({**case, "expected": expected}, before, after, trace, infra, dry, adapter.runtime_contract)
         dump(output / "grade.json", graded)
         return {"case": case["id"], "kind": case["kind"], "fixture": case["fixture"], "case_digest": digest(case), "fixture_digest": digest({"kind": case["fixture"], "before": before}), "config_digest": snapshot["hash"], "candidate_hashes": snapshot["hashes"], "actual_child_runtime": trace["native_agents"], "latency_seconds": round(time.monotonic() - started, 3), "tokens": trace["tokens"], "grade": graded}
     except TimeoutError:
         after = files(work)
-        state_after = git_state(work, adapter["tools"]["git"])
+        state_after = git_state(work, adapter.tools()["git"])
         dump(output / "before.json", {"hashes": before, "git": state_before})
         dump(output / "after.json", {"hashes": after, "git": state_after})
         dump(output / "infra.json", {"exit_code": None, "category": "timeout", "retry_at": None})
@@ -287,7 +271,7 @@ def run_one(case: dict[str, Any], output: Path, dry: bool, model: str, effort: s
         return {"case": case["id"], "kind": case["kind"], "fixture": case["fixture"], "case_digest": digest(case), "fixture_digest": digest({"kind": case["fixture"], "before": before}), "config_digest": snapshot["hash"], "candidate_hashes": snapshot["hashes"], "actual_child_runtime": [], "latency_seconds": round(time.monotonic() - started, 3), "tokens": {}, "grade": graded}
     finally:
         shutil.rmtree(work, ignore_errors=True)
-        shutil.rmtree(home, ignore_errors=True)
+        adapter.cleanup()
 
 
 def wilson(k: int, n: int) -> list[float]:
@@ -409,10 +393,14 @@ def promote(args: argparse.Namespace) -> int:
 def preflight() -> int:
     manifest = load(ROOT / "manifest.json")
     errors = validate_manifest(manifest)
-    _, adapter_error = adapter_info()
-    if adapter_error:
-        errors.append(adapter_error)
-    print(json.dumps({"ok": not errors, "candidate_hashes": candidate_hashes(REPO), "errors": errors}, ensure_ascii=False))
+    adapters: dict[str, Any] = {}
+    for name, cls in ADAPTERS.items():
+        adapter = cls()
+        info, adapter_error = adapter.probe()
+        adapters[name] = {"ok": not adapter_error, "version": info["version"] if info else None, "candidate_hashes": adapter.candidate_hashes(REPO), "error": adapter_error}
+        if adapter_error:
+            errors.append(f"{name}: {adapter_error}")
+    print(json.dumps({"ok": not errors, "adapters": adapters, "errors": errors}, ensure_ascii=False))
     return int(bool(errors))
 
 
@@ -423,13 +411,15 @@ def run(args: argparse.Namespace) -> int:
         raise SystemExit(f"unknown case in suite: {args.case}")
     if args.repetitions < 1:
         raise SystemExit("--repetitions must be positive")
-    adapter, adapter_error = adapter_info()
-    if adapter_error or not adapter:
+    adapter = get_adapter(args.adapter)()
+    _, adapter_error = adapter.probe()
+    if adapter_error or not adapter.info:
         raise SystemExit(adapter_error)
+    model = args.model or adapter.default_model
     (ROOT / ".runs").mkdir(exist_ok=True)
     output = Path(tempfile.mkdtemp(prefix="run-", dir=ROOT / ".runs"))
-    snapshot = snapshot_candidate(REPO, output)
-    declared = declared_runtime(Path(snapshot["path"]))
+    snapshot = adapter.snapshot(REPO, output)
+    declared = adapter.declared_runtime(Path(snapshot["path"]))
     referenced = {role for case in cases for role in (
         case["expected"].get("routing", {}).get("all_of", []) +
         case["expected"].get("routing", {}).get("none_of", []) +
@@ -438,13 +428,13 @@ def run(args: argparse.Namespace) -> int:
     )}
     missing_roles = sorted(referenced - set(declared))
     if missing_roles:
-        raise SystemExit(f"manifest references agents without TOML declarations: {missing_roles}")
+        raise SystemExit(f"manifest references agents without declarations: {missing_roles}")
     results = []
     for repetition in range(args.repetitions):
         for case in cases:
             case_output = output / f"{repetition + 1:02d}-{case['id']}"
             case_output.mkdir()
-            results.append(run_one(case, case_output, args.dry_run, args.model, args.effort, args.timeout, snapshot, adapter, declared))
+            results.append(run_one(case, case_output, args.dry_run, model, args.effort, args.timeout, snapshot, adapter, declared))
     hard_usable = [result for result in results if result["grade"]["hard_status"] not in {"INFRA_ERROR", "SKIP"}]
     behavior_usable = [result for result in results if result["kind"] == "policy" and result["grade"]["hard_status"] != "INFRA_ERROR" and result["grade"]["behavioral_status"] in {"PASS", "FAIL"}]
     metrics = {
@@ -454,8 +444,8 @@ def run(args: argparse.Namespace) -> int:
         "behavioral_routing_samples": len(behavior_usable),
         "infrastructure_error_rate": sum(result["grade"]["hard_status"] == "INFRA_ERROR" for result in results) / len(results) if results else None,
     }
-    drift = source_drift(REPO, snapshot)
-    summary = {"generated_at": utc(), "runner_sha256": sha(Path(__file__)), "manifest_sha256": sha(ROOT / "manifest.json"), "repetitions": args.repetitions, "suite": args.suite, "model": args.model, "cli_adapter": "0.146.x", "cli_version": adapter["version"], "executable_sha256": adapter["sha256"], "toolchain_digest": adapter["toolchain_digest"], "network_env_digest": env_provenance(), "dry_run": args.dry_run, "config_digest": snapshot["hash"], "candidate_hashes": snapshot["hashes"], "metrics": metrics, "source_drift": drift, "results": results}
+    drift = adapter.source_drift(REPO, snapshot)
+    summary = {"generated_at": utc(), "runner_sha256": sha(Path(__file__)), "manifest_sha256": sha(ROOT / "manifest.json"), "repetitions": args.repetitions, "suite": args.suite, "adapter": adapter.name, "model": model, "cli_version": adapter.info["version"], "executable_sha256": adapter.info["sha256"], "toolchain_digest": adapter.info["toolchain_digest"], "network_env_digest": env_provenance(), "dry_run": args.dry_run, "config_digest": snapshot["hash"], "candidate_hashes": snapshot["hashes"], "metrics": metrics, "source_drift": drift, "results": results}
     dump(output / "factcheck.json", factcheck(summary))
     write_summary_attestation(output, summary)
     root = write_evidence_index(output)
@@ -471,12 +461,13 @@ def main() -> int:
     subs = parser.add_subparsers(dest="cmd", required=True)
     subs.add_parser("preflight")
     runner = subs.add_parser("run")
+    runner.add_argument("--adapter", choices=sorted(ADAPTERS), default="codex")
     runner.add_argument("--suite", choices=["plumbing", "policy", "smoke", "full"], required=True)
     runner.add_argument("--case")
     runner.add_argument("--repetitions", type=int, default=1)
     runner.add_argument("--timeout", type=int, default=300)
     runner.add_argument("--dry-run", action="store_true")
-    runner.add_argument("--model", default="gpt-5.6-sol")
+    runner.add_argument("--model", default=None, help="main model; defaults to the adapter's")
     runner.add_argument("--effort", default="medium")
     comparator = subs.add_parser("compare")
     comparator.add_argument("--baseline", required=True)

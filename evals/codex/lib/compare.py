@@ -23,7 +23,7 @@ def confounders(baseline: dict[str, Any], candidate: dict[str, Any]) -> list[str
     for field in ("source_drift", "dry_run"):
         if baseline.get(field) or candidate.get(field):
             reasons.append(field)
-    for field in ("runner_sha256", "manifest_sha256", "suite", "model", "cli_adapter", "cli_version", "executable_sha256", "toolchain_digest", "network_env_digest"):
+    for field in ("runner_sha256", "manifest_sha256", "suite", "adapter", "model", "cli_version", "executable_sha256", "toolchain_digest", "network_env_digest"):
         if baseline.get(field) != candidate.get(field):
             reasons.append(f"{field}_drift")
     if _cases(baseline) != _cases(candidate):
