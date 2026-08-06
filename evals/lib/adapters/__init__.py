@@ -1,10 +1,11 @@
 """Adapter registry: per-CLI transports for the shared evaluation core."""
 from __future__ import annotations
 
+from .claude import ClaudeAdapter
 from .codex import CodexAdapter
 from .grok import GrokAdapter
 
-ADAPTERS = {"codex": CodexAdapter, "grok": GrokAdapter}
+ADAPTERS = {"claude": ClaudeAdapter, "codex": CodexAdapter, "grok": GrokAdapter}
 
 
 def get_adapter(name: str):

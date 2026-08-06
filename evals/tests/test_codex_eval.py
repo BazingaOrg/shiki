@@ -13,7 +13,7 @@ SPEC = importlib.util.spec_from_file_location("codex_eval", Path(__file__).paren
 M = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(M)
 
-from lib.adapters import CodexAdapter, GrokAdapter  # noqa: E402
+from lib.adapters import ClaudeAdapter, CodexAdapter, GrokAdapter  # noqa: E402
 from lib.evidence import write_events_evidence, write_session_evidence  # noqa: E402
 
 
@@ -407,6 +407,104 @@ class EvaluationTests(unittest.TestCase):
         # read-write capability permits edits: search_replace is a write attempt
         trace = run_case("read-write", "search_replace")
         self.assertEqual(trace["child_write_capable_attempts"], 1)
+
+    # -- Claude adapter --------------------------------------------------
+
+    def test_claude_declared_runtime_reads_frontmatter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            snap = Path(directory)
+            (snap / "CLAUDE.md").write_text("rules\n")
+            agents = snap / "agents"
+            agents.mkdir()
+            (agents / "fast-worker.md").write_text('---\nname: fast-worker\ndescription: mechanical work\nmodel: sonnet\nprompt_mode: full\npermission_mode: default\n---\ninstructions\n')
+            declared = ClaudeAdapter().declared_runtime(snap)
+            self.assertEqual(declared["fast-worker"], {"model": "sonnet", "effort": "unobserved", "sandbox_type": "workspace-write"})
+            (agents / "deep-reasoner.md").write_text('---\nname: deep-reasoner\nmodel: opus\npermission_mode: plan\n---\n')
+            declared = ClaudeAdapter().declared_runtime(snap)
+            self.assertEqual(declared["deep-reasoner"]["sandbox_type"], "read-only")
+
+    def test_claude_stream_evidence_maps_result_and_edits(self):
+        adapter = ClaudeAdapter()
+        with tempfile.TemporaryDirectory() as directory:
+            path, _ = adapter.stream_evidence('\n'.join([
+                '{"type":"system","subtype":"hook_started","hook_name":"SessionStart"}',
+                '{"type":"assistant","message":{"model":"m","content":[{"type":"tool_use","name":"Read","input":{}}]}}',
+                '{"type":"assistant","message":{"model":"m","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"README.md"}}]}}',
+                '{"type":"result","session_id":"s-1","usage":{"input_tokens":5}}',
+            ]) + '\n', Path(directory))
+            trace = M.normalize_trace([], path)
+            self.assertEqual(adapter.session_id, "s-1")
+            self.assertEqual(trace["candidate_write_events"], 1)  # Edit only, not Read
+            self.assertEqual(trace["tokens"]["input_tokens"], 5)
+            self.assertEqual(trace["unknown"], [])
+
+    def test_claude_session_evidence_links_agent_spawns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            work = root / "work"
+            work.mkdir()
+            fake_home = root / "fake-home"
+            encoded = str(work.resolve()).replace("/", "-")
+            proj = fake_home / ".claude" / "projects" / encoded
+            proj.mkdir(parents=True)
+            parent = proj / "parent-111.jsonl"
+            container = proj / "child-222"
+            (container / "subagents").mkdir(parents=True)
+            parent.write_text("\n".join([
+                '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Spawn fast-worker"}]},"timestamp":"2026-08-06T00:00:00Z"}',
+                '{"type":"assistant","message":{"model":"grok","content":[{"type":"tool_use","name":"Agent","id":"call_1","input":{"subagent_type":"fast-worker","prompt":"append a line"}}]},"timestamp":"2026-08-06T00:00:01Z"}',
+                '{"type":"system","content":"<CLAUDE.md> candidate-content </CLAUDE.md>"}',
+            ]) + "\n")
+            (container / "subagents" / "agent-a0cbd4b08aa0982c2.jsonl").write_text("\n".join([
+                '{"type":"user","message":{"role":"user","content":[]},"timestamp":"2026-08-06T00:00:02Z"}',
+                '{"type":"assistant","message":{"model":"deepseek-v4-flash","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"NOTES.md"}}]},"timestamp":"2026-08-06T00:00:03Z"}',
+            ]) + "\n")
+            (container / "subagents" / "agent-a0cbd4b08aa0982c2.meta.json").write_text('{"agentType":"fast-worker","toolUseId":"call_1","spawnDepth":1}')
+            snap = root / "snap"
+            snap.mkdir()
+            (snap / "CLAUDE.md").write_text("candidate-content")
+            events = root / "events.jsonl"
+            events.write_text('{"type":"turn.completed","usage":{}}\n')
+            with mock.patch("pathlib.Path.home", return_value=fake_home):
+                adapter = ClaudeAdapter()
+                adapter.session_id = "parent-111"
+                adapter.snapshot_path = str(snap)
+                paths, _ = adapter.session_evidence(work, root / "out")
+            trace = M.normalize_trace(paths, events)
+            self.assertEqual(trace["unknown"], [])
+            self.assertTrue(trace["health"]["ok"])
+            agent = trace["native_agents"][0]
+            self.assertEqual(agent["role"], "fast-worker")
+            self.assertEqual(agent["runtime"]["model"], "deepseek-v4-flash")
+            self.assertEqual(trace["child_write_capable_attempts"], 1)
+            self.assertEqual(agent["outcome"], "completed")
+
+    def test_claude_injection_check_fails_closed_without_candidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            work = root / "work"
+            work.mkdir()
+            fake_home = root / "fake-home"
+            proj = fake_home / ".claude" / "projects" / str(work.resolve()).replace("/", "-")
+            parent = proj / "parent-111.jsonl"
+            parent.parent.mkdir(parents=True)
+            parent.write_text('{"type":"system","content":"no candidate here"}\n')
+            snap = root / "snap"
+            snap.mkdir()
+            (snap / "CLAUDE.md").write_text("candidate-content")
+            with mock.patch("pathlib.Path.home", return_value=fake_home):
+                adapter = ClaudeAdapter()
+                adapter.session_id = "parent-111"
+                adapter.snapshot_path = str(snap)
+                paths, _ = adapter.session_evidence(work, root / "out")
+            trace = M.normalize_trace(paths)
+            self.assertIn("candidate-not-injected", {item["reason"] for item in trace["unknown"]})
+
+    def test_claude_runtime_contract_is_exact_model_only(self):
+        adapter = ClaudeAdapter()
+        declared = {"model": "sonnet", "effort": "unobserved", "sandbox_type": "workspace-write"}
+        self.assertTrue(adapter.runtime_contract(declared, {"model": "sonnet", "effort": None, "sandbox_policy": {"type": None}}))
+        self.assertFalse(adapter.runtime_contract(declared, {"model": "opus", "effort": None, "sandbox_policy": {"type": None}}))
 
     def test_grok_runtime_contract_family_and_capability_ceiling(self):
         adapter = GrokAdapter()

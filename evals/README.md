@@ -30,7 +30,7 @@ policy 覆盖 typo 直接处理、跨模块并发架构分析、五份 config �
 
 `factcheck.json` 将显式子 agent 支持、无委派词 policy prompt 的实际路由，以及 custom-agent runtime override 分为独立 observations。claim outcome 为 `doc_only`、`runtime_only`、`confirmed`、`conflict` 或 `unknown`；显式 prompt 的成功不构成 policy-routing 确认，policy 路由的 PASS/FAIL 单独驱动 `subagents-guidance-trigger` claim 的 `confirmed`/`conflict`。
 
-## Adapter 模型（codex / grok）
+## Adapter 模型（codex / grok / claude）
 
 评测核心（manifest 契约、fixture、grading、compare、evidence root、promote）与 CLI 无关；`lib/adapters/` 提供 per-CLI 传输。
 
@@ -43,6 +43,13 @@ policy 覆盖 typo 直接处理、跨模块并发架构分析、五份 config �
 - **写入语义**：file_change（stream）只计确定编辑工具（`search_replace`/`apply_patch`）；bash 调用不算文件变更。子会话的写工具调用只有在 capability 允许编辑（`read-write`/`all`）时才计为 write attempt——grok 的 capability 沙箱提供了 codex 没有的"shell 只读"证明，`read-only`/`execute` 下的 bash 是沙箱内验证工作而非写入。
 - **生命周期**：子会话完成证据是父会话对 `get_command_or_subagent_output` 的 tool_result；无完成证据的子会话以 `UNKNOWN` 处理（fail-closed）。
 - 运行环境：`--permission-mode auto`、`--disable-web-search`、`--no-memory`、主模型 `-m` + `--reasoning-effort`；子 agent 行为由 profile 决定。
+
+**claude**：`claude -p --output-format stream-json --verbose --permission-mode acceptEdits`（NDJSON 事件流：assistant 消息带 model 与 tool_use，result 事件带 session_id/usage/cost）+ `~/.claude/projects/<斜杠转横线编码路径>/` 的会话 jsonl。差异：
+
+- **隔离是 cwd 级的**：候选注入把 `CLAUDE.md` 复制进 fixture cwd（作为项目规则发现）与 `agents/*.md` 复制进 `<cwd>/.claude/agents/`；注入反证靠父会话 system 消息中出现候选 CLAUDE.md 内容（`candidate-not-injected` → `UNKNOWN`）。
+- **子 agent 证据**：`Agent` 工具（input 带 `subagent_type`）→ 子容器会话的 `subagents/agent-*.jsonl`（assistant 消息带 `attributionAgent` 与 model）+ `agent-*.meta.json`（`agentType`/`toolUseId`）。按 `toolUseId` 与父会话 Agent 调用精确关联，避免扫到无关旧会话。
+- **runtime 契约只比较 model（精确）**：Claude Code 是权限系统而非沙箱，effort/sandbox 在证据中不可观测，显式记录为 `unobserved` 并不断言（与 codex/grok 的 sandbox 契约不同，属平台能力差异）。repo 的 agent 模板 frontmatter 只有 name/description/model（无 permission_mode），同样按 unobserved 处理。
+- **写入语义**：file_change 只计确定编辑工具（`Edit`/`Write`/`NotebookEdit`/`MultiEdit`/`apply_patch`）；`Bash` 不算文件变更。子 agent 的写工具调用计为 write attempt。
 
 ## 官方事实边界
 
