@@ -13,6 +13,7 @@
 - Dispatch `fast-worker` only for bounded, separable, repetitive, or bulk implementation with clear ownership.
 - Dispatch `qa-runner` only for material independent tests, typecheck, lint, or coverage. QA reports results and never fixes them.
 - Keep dependent work serial. Parallelize only genuinely independent owned scopes.
+- Dependent work is serial: wait for the previous agent to complete before starting the next.
 - Routing hints: concurrency deadlocks, cross-module root causes, and design tradeoff comparisons are deep-reasoner tasks — route them there and synthesize the conclusion instead of analyzing directly. Mechanical same-pattern edits across 3+ files are fast-worker tasks with an explicit scope; single-file typo or format fixes are done directly. Independent verification of an existing diff (run its tests, report PASS/FAIL) is a qa-runner task; a fresh read-only review of that same unchanged diff is a deep-reasoner task.
 
 ## Git and safety
