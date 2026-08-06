@@ -227,11 +227,19 @@ class EvaluationTests(unittest.TestCase):
         self.assertIn("explicit_subagent_support", facts["observations"])
 
     def test_factcheck_wires_guidance_claim_to_policy_routing(self):
-        summary = self.summary(["PASS", "FAIL"])
+        def policy_row(case, status):
+            return {"case": case, "kind": "policy", "actual_child_runtime": [], "grade": {"hard_status": "PASS" if status == "PASS" else "FAIL", "behavioral_status": status}}
+        summary = self.summary(["PASS"])
+        summary["results"] = [policy_row("policy-architecture", "PASS")]
         facts = M.factcheck(summary)
         guidance = next(claim for claim in facts["claims"] if claim["id"] == "subagents-guidance-trigger")
         self.assertEqual(guidance["outcome"], "confirmed")
-        summary = self.summary(["SKIP"])
+        summary["results"] = [policy_row("policy-architecture", "FAIL")]
+        facts = M.factcheck(summary)
+        guidance = next(claim for claim in facts["claims"] if claim["id"] == "subagents-guidance-trigger")
+        self.assertEqual(guidance["outcome"], "conflict")
+        # A PASS on a none_of case never confirms guidance-triggered delegation.
+        summary["results"] = [policy_row("policy-typo-direct", "PASS")]
         facts = M.factcheck(summary)
         guidance = next(claim for claim in facts["claims"] if claim["id"] == "subagents-guidance-trigger")
         self.assertEqual(guidance["outcome"], "doc_only")

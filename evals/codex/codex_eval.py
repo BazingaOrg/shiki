@@ -295,6 +295,10 @@ def factcheck(summary: dict[str, Any]) -> dict[str, Any]:
     }
     policy = observations["policy_routing"]
     policy_statuses = [item["status"] for item in policy]
+    manifest_cases = {case["id"]: case for case in load(ROOT / "manifest.json")["cases"]}
+    # Only delegation-expected policy cases (all_of) can confirm guidance-triggered
+    # spawning; a PASS on a none_of case means "correctly did NOT delegate".
+    delegation_statuses = [item["status"] for item in policy if manifest_cases.get(item["case"], {}).get("expected", {}).get("routing", {}).get("all_of")]
     explicit = bool(observations["explicit_subagent_support"])
     runtime = bool(observations["custom_agent_runtime_overrides"]) and all(r["grade"]["hard_status"] == "PASS" for r in results if r["case"].startswith("plumbing-explicit-"))
     runtime_conflict = any(r["grade"].get("reason") == "runtime contract mismatch" for r in results if r["case"].startswith("plumbing-explicit-"))
@@ -309,12 +313,13 @@ def factcheck(summary: dict[str, Any]) -> dict[str, Any]:
             outcome = "conflict"
         elif ident == "subagents-guidance-trigger":
             # The policy suite measures exactly this claim: guidance-triggered routing
-            # without a role name. One PASS confirms the existence claim; FAIL conflicts.
-            if "PASS" in policy_statuses:
+            # without a role name. Only delegation-expected cases count: one PASS
+            # confirms the existence claim, FAIL conflicts, UNKNOWN stays unknown.
+            if "PASS" in delegation_statuses:
                 outcome = "confirmed"
-            elif "FAIL" in policy_statuses:
+            elif "FAIL" in delegation_statuses:
                 outcome = "conflict"
-            elif "UNKNOWN" in policy_statuses:
+            elif "UNKNOWN" in delegation_statuses:
                 outcome = "unknown"
             else:
                 outcome = "doc_only"
