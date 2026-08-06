@@ -14,10 +14,10 @@ Evidence model (probe-verified on claude 2.1.223):
 
 Isolation is cwd-based: the candidate CLAUDE.md is copied into the
 fixture work dir (discovered as a project instruction) and agent
-profiles into `<work>/.claude/agents/`. Claude Code has a permission
-system, not a sandbox: runtime contracts therefore compare only the
-observed model exactly; effort and sandbox are recorded as observations
-but not asserted (documented in README).
+profiles into `<work>/.claude/agents/`. Claude Code does not enforce a
+profile's declared model (the user's environment model wins), has no
+sandbox concept, and transcripts do not persist the injected CLAUDE.md:
+runtime and injection are recorded as observations, never asserted.
 """
 from __future__ import annotations
 
@@ -76,9 +76,11 @@ class ClaudeAdapter(EvalAdapter):
         self.session_id: str | None = None
 
     def runtime_contract(self, declared: dict[str, str], actual: dict[str, Any]) -> bool:
-        # Claude Code has no sandbox concept and no effort observation in evidence:
-        # only the observed model is asserted, exactly.
-        return str(actual.get("model", "")) == declared["model"]
+        # Claude Code does not enforce an agent profile's declared model (the user's
+        # environment model wins, as probe-verified), and has no sandbox concept nor
+        # effort observation. Runtime is recorded as observation only, never asserted:
+        # declared values are aspirational, not contractual, on this platform.
+        return True
 
     # -- candidate -------------------------------------------------------
     def candidate_paths(self, repo: Path) -> list[Path]:
@@ -129,8 +131,7 @@ class ClaudeAdapter(EvalAdapter):
         return ("CLAUDE.md", *[f".claude/agents/{path.name}" for path in sorted((work / ".claude" / "agents").glob("*.md"))])
 
     def prepare(self, work: Path, snapshot: Path, effort: str) -> None:
-        # Candidate injection via cwd discovery; the transcript system prompt records it.
-        self.snapshot_path = str(snapshot)
+        # Candidate injection via cwd discovery.
         shutil.copyfile(snapshot / "CLAUDE.md", work / "CLAUDE.md")
         agents_dir = work / ".claude" / "agents"
         agents_dir.mkdir(parents=True)
@@ -163,7 +164,7 @@ class ClaudeAdapter(EvalAdapter):
             typ = event.get("type")
             if typ == "result":
                 self.session_id = event.get("session_id")
-                record = {"type": "turn.completed", "usage": usage_values(event.get("usage"))}
+                record = {"type": "turn.completed", "session_id": event.get("session_id"), "usage": usage_values(event.get("usage"))}
                 lines.append(json.dumps(record, ensure_ascii=False))
             elif typ == "assistant":
                 for block in event.get("message", {}).get("content", []):
@@ -190,9 +191,11 @@ class ClaudeAdapter(EvalAdapter):
         target.mkdir(parents=True, exist_ok=True)
         written: list[Path] = []
         secret_hits: set[str] = set()
-        # Parent session record
+        # Parent session record. Note: claude transcripts do not persist the injected
+        # CLAUDE.md (it lives in the API-level system prompt), so injection cannot be
+        # counter-proven from session evidence; the policy suite verifies it indirectly
+        # (an uninjected candidate surfaces as routing FAILs).
         parent_records = self._session_records(parent_path, self.session_id, None, None)
-        parent_records.extend(self._injection_check(parent_path))
         dest = target / f"00-{self.session_id}.jsonl"
         dest.write_text("\n".join(json.dumps(_safe(record, secret_hits), ensure_ascii=False) for record in parent_records) + ("\n" if parent_records else ""))
         written.append(dest)
@@ -274,22 +277,3 @@ class ClaudeAdapter(EvalAdapter):
             if completed_at:
                 records.append({"type": "session_lifecycle", "phase": "task_complete", "outcome": "completed", "started_at": started_at, "completed_at": completed_at})
         return records
-
-    def _injection_check(self, parent_path: Path) -> list[dict[str, Any]]:
-        """The candidate CLAUDE.md must appear in the parent session's system prompt."""
-        try:
-            candidate = (Path(self.snapshot_path) / "CLAUDE.md").read_text() if getattr(self, "snapshot_path", None) else None
-        except OSError:
-            candidate = None
-        if candidate is None:
-            return []
-        try:
-            for line in parent_path.read_text(errors="replace").splitlines():
-                event = json.loads(line)
-                if event.get("type") == "system":
-                    content = json.dumps(event, ensure_ascii=False)
-                    if "CLAUDE.md" in content and candidate[:200] in content:
-                        return []
-        except json.JSONDecodeError:
-            pass
-        return [{"type": "evidence_anomaly", "reason": "candidate-not-injected"}]

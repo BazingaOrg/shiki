@@ -242,7 +242,7 @@ def run_one(case: dict[str, Any], output: Path, dry: bool, model: str, effort: s
         injected = adapter.injected_paths(work)
         before = {key: value for key, value in files(work).items() if key not in injected}
         state_before = git_state(work, adapter.tools()["git"])
-        dump(output / "invocation.json", {"argv": [redacted(item) for item in adapter.invocation(work, case["prompt"], model, effort)], "prompt_via": adapter.prompt_via, "requested_model": model})
+        dump(output / "invocation.json", {"argv": [redacted(item) for item in adapter.invocation(work, case["prompt"], model, effort)], "prompt_via": adapter.prompt_via, "requested_model": model, "cwd": str(work)})
         rc, stdout, stderr = (0, "", "dry run") if dry else adapter.run(work, case["prompt"], model, effort, timeout)
         events, event_secrets = adapter.stream_evidence(stdout, output)
         evidence_sessions, session_secrets = adapter.session_evidence(work, output)

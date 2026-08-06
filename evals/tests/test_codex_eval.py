@@ -479,32 +479,11 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(trace["child_write_capable_attempts"], 1)
             self.assertEqual(agent["outcome"], "completed")
 
-    def test_claude_injection_check_fails_closed_without_candidate(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            work = root / "work"
-            work.mkdir()
-            fake_home = root / "fake-home"
-            proj = fake_home / ".claude" / "projects" / str(work.resolve()).replace("/", "-")
-            parent = proj / "parent-111.jsonl"
-            parent.parent.mkdir(parents=True)
-            parent.write_text('{"type":"system","content":"no candidate here"}\n')
-            snap = root / "snap"
-            snap.mkdir()
-            (snap / "CLAUDE.md").write_text("candidate-content")
-            with mock.patch("pathlib.Path.home", return_value=fake_home):
-                adapter = ClaudeAdapter()
-                adapter.session_id = "parent-111"
-                adapter.snapshot_path = str(snap)
-                paths, _ = adapter.session_evidence(work, root / "out")
-            trace = M.normalize_trace(paths)
-            self.assertIn("candidate-not-injected", {item["reason"] for item in trace["unknown"]})
-
-    def test_claude_runtime_contract_is_exact_model_only(self):
+    def test_claude_runtime_contract_is_observation_only(self):
         adapter = ClaudeAdapter()
         declared = {"model": "sonnet", "effort": "unobserved", "sandbox_type": "workspace-write"}
-        self.assertTrue(adapter.runtime_contract(declared, {"model": "sonnet", "effort": None, "sandbox_policy": {"type": None}}))
-        self.assertFalse(adapter.runtime_contract(declared, {"model": "opus", "effort": None, "sandbox_policy": {"type": None}}))
+        # Claude Code does not enforce declared agent models; runtime is never asserted.
+        self.assertTrue(adapter.runtime_contract(declared, {"model": "deepseek-v4-flash", "effort": None, "sandbox_policy": {"type": None}}))
 
     def test_grok_runtime_contract_family_and_capability_ceiling(self):
         adapter = GrokAdapter()

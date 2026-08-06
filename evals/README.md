@@ -46,9 +46,9 @@ policy 覆盖 typo 直接处理、跨模块并发架构分析、五份 config �
 
 **claude**：`claude -p --output-format stream-json --verbose --permission-mode acceptEdits`（NDJSON 事件流：assistant 消息带 model 与 tool_use，result 事件带 session_id/usage/cost）+ `~/.claude/projects/<斜杠转横线编码路径>/` 的会话 jsonl。差异：
 
-- **隔离是 cwd 级的**：候选注入把 `CLAUDE.md` 复制进 fixture cwd（作为项目规则发现）与 `agents/*.md` 复制进 `<cwd>/.claude/agents/`；注入反证靠父会话 system 消息中出现候选 CLAUDE.md 内容（`candidate-not-injected` → `UNKNOWN`）。
+- **隔离是 cwd 级的**：候选注入把 `CLAUDE.md` 复制进 fixture cwd（作为项目规则发现）与 `agents/*.md` 复制进 `<cwd>/.claude/agents/`。与 codex/grok 不同，claude 的 transcript **不持久化注入的 CLAUDE.md**（注入在 API 级 system prompt），注入无法从会话证据反证——由 policy 套件的行为结果间接验证（未注入的候选会以 routing FAIL 暴露）。
 - **子 agent 证据**：`Agent` 工具（input 带 `subagent_type`）→ 子容器会话的 `subagents/agent-*.jsonl`（assistant 消息带 `attributionAgent` 与 model）+ `agent-*.meta.json`（`agentType`/`toolUseId`）。按 `toolUseId` 与父会话 Agent 调用精确关联，避免扫到无关旧会话。
-- **runtime 契约只比较 model（精确）**：Claude Code 是权限系统而非沙箱，effort/sandbox 在证据中不可观测，显式记录为 `unobserved` 并不断言（与 codex/grok 的 sandbox 契约不同，属平台能力差异）。repo 的 agent 模板 frontmatter 只有 name/description/model（无 permission_mode），同样按 unobserved 处理。
+- **runtime 契约整体不适用（记录为观测）**：Claude Code 不强制 agent profile 声明的 model（用户环境模型覆盖，已实测验证）、无沙箱概念、effort 不可观测——runtime 全部记录为观测、不断言（与 codex/grok 的契约不同，属平台能力差异）。repo 的 agent 模板 frontmatter 只有 name/description/model（无 permission_mode），同样按 unobserved 处理。
 - **写入语义**：file_change 只计确定编辑工具（`Edit`/`Write`/`NotebookEdit`/`MultiEdit`/`apply_patch`）；`Bash` 不算文件变更。子 agent 的写工具调用计为 write attempt。
 
 ## 官方事实边界
