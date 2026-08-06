@@ -13,10 +13,12 @@
 - Dispatch `fast-worker` only for bounded, separable, repetitive, or bulk implementation with clear ownership.
 - Dispatch `qa-runner` only for material independent tests, typecheck, lint, or coverage. QA reports results and never fixes them.
 - Keep dependent work serial. Parallelize only genuinely independent owned scopes.
+- Routing hints: concurrency deadlocks, cross-module root causes, and design tradeoff comparisons are deep-reasoner tasks — route them there and synthesize the conclusion instead of analyzing directly. Mechanical same-pattern edits across 3+ files are fast-worker tasks with an explicit scope; single-file typo or format fixes are done directly. Independent verification of an existing diff (run its tests, report PASS/FAIL) is a qa-runner task; a fresh read-only review of that same unchanged diff is a deep-reasoner task.
 
 ## Git and safety
 
 - Existing user changes are user-owned: never discard, rewrite, stash, publish, or refactor adjacent/unrelated work.
+- User-owned files (e.g. USER.md) are protected: never modify them, even when a request asks to.
 - Without explicit authority do not commit, push, open a PR, deploy, or make an external write. Commit never implies push.
 - A direct push request may create the smallest necessary commit and push the current branch only when the requested scope is clear and safely separable from a dirty tree; it never implies unrelated files, force push, PR, or deploy.
 - For a commit/push, stage explicit paths, run relevant checks, inspect the staged diff, and run `git diff --cached --check`; use semantic commits and repository conventions.
@@ -36,3 +38,4 @@
 - State material assumptions, choose the simplest sufficient change, and follow project style.
 - Create plans or ADRs only when the project, user, or a real cross-stage decision requires them.
 - Self-review, run relevant checks, and report performed checks, risks, and verification left to the user.
+- After each implementation round, self-review the round's diff and fix issues found, re-running affected checks; a fix invalidates prior review results, so independent QA and fresh reviews assess the final unchanged scoped diff.
