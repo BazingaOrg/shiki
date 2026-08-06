@@ -317,9 +317,10 @@ class EvaluationTests(unittest.TestCase):
     def test_grok_stream_evidence_maps_end_and_writes(self):
         adapter = GrokAdapter()
         with tempfile.TemporaryDirectory() as directory:
-            path, secrets = adapter.stream_evidence('{"type":"tool_call","toolName":"search_replace","rawInput":{}}\n{"type":"usage","usage":{}}\n{"type":"end","sessionId":"s-1","usage":{"input_tokens":5}}\n{"type":"future.event"}\n', Path(directory))
+            path, secrets = adapter.stream_evidence('{"type":"tool_call","toolName":"search_replace","rawInput":{}}\n{"type":"tool_call","toolName":"Bash","rawInput":{}}\n{"type":"usage","usage":{}}\n{"type":"end","sessionId":"s-1","usage":{"input_tokens":5}}\n{"type":"future.event"}\n', Path(directory))
             trace = M.normalize_trace([], path)
             self.assertEqual(adapter.session_id, "s-1")
+            # search_replace is a definite edit; bash alone is not a file change.
             self.assertEqual(trace["candidate_write_events"], 1)
             self.assertEqual(trace["tokens"]["input_tokens"], 5)
             self.assertNotIn("exec-turn.completed", trace["health"]["missing"])
@@ -369,6 +370,43 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(agent["runtime"], {"model": "grok-4.5-build", "effort": "medium", "sandbox_policy": {"type": "workspace-write"}})
             self.assertEqual(agent["outcome"], "completed")
             self.assertEqual(trace["child_write_capable_attempts"], 1)
+
+    def test_grok_write_attempts_require_edit_capable_capability(self):
+        def run_case(capability, tool):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                work = root / "work"
+                work.mkdir()
+                fake_home = root / "fake-home"
+                sessions = fake_home / ".grok" / "sessions" / urllib.parse.quote(str(work.resolve()), safe="")
+                parent_dir = sessions / "parent-111"
+                child_dir = sessions / "child-222"
+                parent_dir.mkdir(parents=True)
+                child_dir.mkdir(parents=True)
+                (parent_dir / "chat_history.jsonl").write_text("\n".join([
+                    '{"type":"assistant","content":"","model_id":"grok-4.5-build","reasoning_effort":"high","tool_calls":[{"id":"c1","name":"spawn_subagent","arguments":"{\\"subagent_type\\":\\"qa-runner\\",\\"capability_mode\\":\\"%s\\"}"}]}' % capability,
+                    '{"type":"assistant","content":"","model_id":"grok-4.5-build","reasoning_effort":"high","tool_calls":[{"id":"c2","name":"get_command_or_subagent_output","arguments":"{\\"task_ids\\":[\\"child-222\\"]}"}]}',
+                    '{"type":"tool_result","tool_call_id":"c2","content":"done"}',
+                ]) + "\n")
+                (parent_dir / "updates.jsonl").write_text('{"timestamp": 1000}\n{"timestamp": 2000}\n')
+                (parent_dir / "prompt_context.json").write_text(json.dumps({"agents_md_files": [{"file_name": "Agents.md", "file_path": str(work) + "/Agents.md", "content": "x"}]}))
+                (child_dir / "chat_history.jsonl").write_text('{"type":"assistant","content":"","model_id":"grok-4.5-build","reasoning_effort":"low","tool_calls":[{"id":"x1","name":"%s","arguments":"{}"}]}\n' % tool)
+                (child_dir / "updates.jsonl").write_text('{"timestamp": 1500}\n{"timestamp": 1800}\n')
+                snap = root / "snap"
+                snap.mkdir()
+                (snap / "AGENTS.md").write_text("x")
+                with mock.patch("pathlib.Path.home", return_value=fake_home):
+                    adapter = GrokAdapter()
+                    adapter.session_id = "parent-111"
+                    adapter.snapshot_path = str(snap)
+                    paths, _ = adapter.session_evidence(work, root / "out")
+                return M.normalize_trace(paths)
+        # execute capability blocks edits: bash is not a write attempt
+        trace = run_case("execute", "Bash")
+        self.assertEqual(trace["child_write_capable_attempts"], 0)
+        # read-write capability permits edits: search_replace is a write attempt
+        trace = run_case("read-write", "search_replace")
+        self.assertEqual(trace["child_write_capable_attempts"], 1)
 
     def test_grok_runtime_contract_family_and_capability_ceiling(self):
         adapter = GrokAdapter()

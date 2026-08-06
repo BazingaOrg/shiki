@@ -173,8 +173,9 @@ class GrokAdapter(EvalAdapter):
                 record = {"type": "turn.completed", "usage": usage_values(event.get("usage"))}
                 lines.append(json.dumps(record, ensure_ascii=False))
             elif typ == "tool_call":
-                # tool_call is a known event; only write-capable tools count as changes.
-                if event.get("toolName") in WRITE_TOOLS:
+                # A file change is a definite edit tool call; bash is write-capable but
+                # unobservable here (session evidence carries the capability context).
+                if event.get("toolName") in {"search_replace", "apply_patch"}:
                     lines.append(json.dumps({"type": "item.started", "item": {"type": "file_change", "has_changes": True}}))
             elif typ in KNOWN_NON_EVIDENCE_ACP:
                 continue
@@ -275,7 +276,12 @@ class GrokAdapter(EvalAdapter):
                 if name == "spawn_subagent":
                     records.append({"type": "response_item", "item_type": "custom_tool_call", "name": "spawn_subagent", "call_id": call.get("id"), "arguments": {"subagent_type": args.get("subagent_type"), "capability_mode": args.get("capability_mode")}})
                 elif name in WRITE_TOOLS:
-                    records.append({"type": "session_write_attempt", "tool": name})
+                    # A write-capable tool is only a write attempt when a child runs it
+                    # under an edit-permitting capability (read-write/all); under
+                    # read-only/execute the sandbox blocks the edit, and parent shell
+                    # usage is observed through stream file_change, not an attempt.
+                    if role and WRITE_LEVEL.get(CAPABILITY_MAP.get(capability, capability), 0) >= 1:
+                        records.append({"type": "session_write_attempt", "tool": name})
                 elif name in KNOWN_NON_EVIDENCE_TOOLS:
                     continue
                 else:

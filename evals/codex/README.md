@@ -40,6 +40,7 @@ policy 覆盖 typo 直接处理、跨模块并发架构分析、五份 config �
 
 - **隔离是 cwd 级的**：grok 使用真实 `~/.grok`（全局 config/rules/agents/skills 全部加载，这是被测环境本身）；候选注入通过把 `grok/AGENTS.md` 复制进 fixture cwd（被当作 project instruction 加载）与 `grok/agents/*.md` 复制进 `<cwd>/.grok/agents/`（project agent 优先于 user agent）。`prompt_context.json` 反证注入，内容不匹配或未注入 → `candidate-not-injected` anomaly → `UNKNOWN`。
 - **runtime 契约**：子 agent 的 model/effort 观测自子会话 chat_history；sandbox 观测自父会话 `spawn_subagent` 的 `capability_mode`。声明值来自 profile frontmatter（`permission_mode: plan` → `read-only`，其余 → `workspace-write`）。grok 契约与 codex 的精确相等不同：model 用族匹配（CLI 接受 `grok-4.5`，会话证据记录部署 build `grok-4.5-build`）；capability 是模型 spawn 时自选的 coarse filter（`read-only`/`read-write`/`execute`/`all`），声明值是**上限**——观测不得宽于声明（`read-only`/`execute` 满足 `workspace-write` 上限，反向不成立）。effort 仍精确比较。
+- **写入语义**：file_change（stream）只计确定编辑工具（`search_replace`/`apply_patch`）；bash 调用不算文件变更。子会话的写工具调用只有在 capability 允许编辑（`read-write`/`all`）时才计为 write attempt——grok 的 capability 沙箱提供了 codex 没有的"shell 只读"证明，`read-only`/`execute` 下的 bash 是沙箱内验证工作而非写入。
 - **生命周期**：子会话完成证据是父会话对 `get_command_or_subagent_output` 的 tool_result；无完成证据的子会话以 `UNKNOWN` 处理（fail-closed）。
 - 运行环境：`--permission-mode auto`、`--disable-web-search`、`--no-memory`、主模型 `-m` + `--reasoning-effort`；子 agent 行为由 profile 决定。
 
