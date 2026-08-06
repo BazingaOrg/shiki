@@ -185,7 +185,7 @@ class GrokAdapter(EvalAdapter):
         if not self.session_id:
             return [], []
         base = Path.home() / ".grok" / "sessions" / urllib.parse.quote(str(work.resolve()), safe="")
-        session_dirs = {path.name: path for path in sorted(base.glob("*"))} if base.is_dir() else {}
+        session_dirs = {path.name: path for path in sorted(base.glob("*")) if path.is_dir()} if base.is_dir() else {}
         parent_dir = session_dirs.get(self.session_id)
         role_map, capabilities, completed_tasks = self._parent_facts(parent_dir) if parent_dir else ({}, {}, set())
         target = output / "session-evidence"
@@ -312,7 +312,7 @@ class GrokAdapter(EvalAdapter):
             prompt_context = json.loads((parent_dir / "prompt_context.json").read_text())
         except (OSError, json.JSONDecodeError):
             return [{"type": "evidence_anomaly", "reason": "prompt-context-unreadable"}]
-        injected = [item.get("content") for item in prompt_context.get("agents_md_files", []) if str(item.get("file_path", "")).endswith("/AGENTS.md")]
+        injected = [item.get("content") for item in prompt_context.get("agents_md_files", []) if Path(str(item.get("file_path", ""))).name.lower() == "agents.md"]
         try:
             candidate = (Path(self.snapshot_path) / "AGENTS.md").read_text() if getattr(self, "snapshot_path", None) else None
         except OSError:

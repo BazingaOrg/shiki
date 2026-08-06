@@ -393,7 +393,7 @@ class EvaluationTests(unittest.TestCase):
             parent_dir = fake_home / ".grok" / "sessions" / urllib.parse.quote(str(work.resolve()), safe="") / "parent-111"
             parent_dir.mkdir(parents=True)
             (parent_dir / "chat_history.jsonl").write_text('{"type":"assistant","content":"","model_id":"grok-4.5-build","reasoning_effort":"high","tool_calls":[]}\n')
-            (parent_dir / "prompt_context.json").write_text(json.dumps({"agents_md_files": [{"file_name": "AGENTS.md", "file_path": "/somewhere/else/AGENTS.md", "content": "shadowed"}]}))
+            (parent_dir / "prompt_context.json").write_text(json.dumps({"agents_md_files": [{"file_name": "Agents.md", "file_path": "/somewhere/else/Agents.md", "content": "shadowed"}]}))
             snap = root / "snap"
             snap.mkdir()
             (snap / "AGENTS.md").write_text("candidate-content")
@@ -404,6 +404,30 @@ class EvaluationTests(unittest.TestCase):
                 paths, _ = adapter.session_evidence(work, root / "out")
             trace = M.normalize_trace(paths)
             self.assertIn("candidate-not-injected", {item["reason"] for item in trace["unknown"]})
+
+    def test_grok_injection_check_matches_case_variants_and_ignores_non_session_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            work = root / "work"
+            work.mkdir()
+            fake_home = root / "fake-home"
+            sessions = fake_home / ".grok" / "sessions" / urllib.parse.quote(str(work.resolve()), safe="")
+            parent_dir = sessions / "parent-111"
+            parent_dir.mkdir(parents=True)
+            (parent_dir / "chat_history.jsonl").write_text('{"type":"assistant","content":"","model_id":"grok-4.5-build","reasoning_effort":"high","tool_calls":[]}\n')
+            (parent_dir / "prompt_context.json").write_text(json.dumps({"agents_md_files": [{"file_name": "Agents.md", "file_path": str(work) + "/Agents.md", "content": "candidate-content"}]}))
+            (sessions / "prompt_history.jsonl").write_text('{"prompt":"x"}\n')
+            snap = root / "snap"
+            snap.mkdir()
+            (snap / "AGENTS.md").write_text("candidate-content")
+            with mock.patch("pathlib.Path.home", return_value=fake_home):
+                adapter = GrokAdapter()
+                adapter.session_id = "parent-111"
+                adapter.snapshot_path = str(snap)
+                paths, _ = adapter.session_evidence(work, root / "out")
+            trace = M.normalize_trace(paths)
+            self.assertEqual(trace["unknown"], [])
+            self.assertEqual([p.name for p in paths], ["00-parent-111.jsonl"])
 
 
 if __name__ == "__main__": unittest.main()
