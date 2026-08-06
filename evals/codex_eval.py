@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent
-REPO = ROOT.parents[1]
+REPO = ROOT.parent
 FORBIDDEN_POLICY_TOKENS = re.compile(r"\b(?:delegate|agent|role|deep-reasoner|fast-worker|qa-runner|subagent)\b", re.I)
 
 if str(ROOT) not in sys.path:

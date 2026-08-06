@@ -3,15 +3,15 @@
 此工具用结构化 trace 评估本地 Codex 编排，不把最终文本当成委派证据。命名角色、runtime、命令 owner 与 lifecycle 只来自 session/event 证据；未知关键结构一律为 `UNKNOWN`。
 
 ```bash
-python3 evals/codex/codex_eval.py preflight
-python3 evals/codex/codex_eval.py run --suite plumbing --dry-run
-SHIKI_CODEX_AUTH_FILE="$HOME/.codex/auth.json" python3 evals/codex/codex_eval.py run --suite policy --case policy-typo-direct --timeout 180
-python3 evals/codex/codex_eval.py run --suite smoke --dry-run
-SHIKI_CODEX_AUTH_FILE="$HOME/.codex/auth.json" python3 evals/codex/codex_eval.py run --suite full --repetitions 5
-python3 evals/codex/codex_eval.py run --adapter grok --suite smoke
-python3 evals/codex/codex_eval.py compare --baseline evals/codex/baselines/reviewed.json --candidate evals/codex/.runs/RUN_ID
-python3 evals/codex/codex_eval.py promote --run evals/codex/.runs/RUN_ID --name reviewed-2026-08-05
-python3 -m unittest discover -s evals/codex/tests
+python3 evals/codex_eval.py preflight
+python3 evals/codex_eval.py run --suite plumbing --dry-run
+SHIKI_CODEX_AUTH_FILE="$HOME/.codex/auth.json" python3 evals/codex_eval.py run --suite policy --case policy-typo-direct --timeout 180
+python3 evals/codex_eval.py run --suite smoke --dry-run
+SHIKI_CODEX_AUTH_FILE="$HOME/.codex/auth.json" python3 evals/codex_eval.py run --suite full --repetitions 5
+python3 evals/codex_eval.py run --adapter grok --suite smoke
+python3 evals/codex_eval.py compare --baseline evals/baselines/reviewed.json --candidate evals/.runs/RUN_ID
+python3 evals/codex_eval.py promote --run evals/.runs/RUN_ID --name reviewed-2026-08-05
+python3 -m unittest discover -s evals/tests
 ```
 
 `run --adapter` 选择被测 CLI（默认 `codex`）。manifest/fixture/compare/promote 与 adapter 无关；summary 的 `adapter`/`cli_version` 字段进入 confounder，跨 adapter 的比较会被判 `CONFOUNDED`。
