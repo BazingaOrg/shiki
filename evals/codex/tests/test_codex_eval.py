@@ -405,6 +405,19 @@ class EvaluationTests(unittest.TestCase):
             trace = M.normalize_trace(paths)
             self.assertIn("candidate-not-injected", {item["reason"] for item in trace["unknown"]})
 
+    def test_injected_paths_are_excluded_from_fixture_hashing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            (work / "AGENTS.md").write_text("rules")
+            agents = work / ".grok" / "agents"
+            agents.mkdir(parents=True)
+            (agents / "fast-worker.md").write_text("profile")
+            injected = set(GrokAdapter().injected_paths(work))
+            self.assertEqual(injected, {"AGENTS.md", ".grok/agents/fast-worker.md"})
+            hashes = {key: value for key, value in M.files(work).items() if key not in injected}
+            self.assertNotIn("AGENTS.md", hashes)
+            self.assertNotIn(".grok/agents/fast-worker.md", hashes)
+
     def test_grok_injection_check_matches_case_variants_and_ignores_non_session_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

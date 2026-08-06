@@ -239,14 +239,15 @@ def run_one(case: dict[str, Any], output: Path, dry: bool, model: str, effort: s
         expected = resolve_runtime(case["expected"], declared)
         fixture(work, case["fixture"], adapter.tools()["git"])
         adapter.prepare(work, Path(snapshot["path"]), effort)
-        before = files(work)
+        injected = adapter.injected_paths(work)
+        before = {key: value for key, value in files(work).items() if key not in injected}
         state_before = git_state(work, adapter.tools()["git"])
         dump(output / "invocation.json", {"argv": [redacted(item) for item in adapter.invocation(work, case["prompt"], model, effort)], "prompt_via": adapter.prompt_via, "requested_model": model})
         rc, stdout, stderr = (0, "", "dry run") if dry else adapter.run(work, case["prompt"], model, effort, timeout)
         events, event_secrets = adapter.stream_evidence(stdout, output)
         evidence_sessions, session_secrets = adapter.session_evidence(work, output)
         trace = normalize_trace(evidence_sessions, events)
-        after = files(work)
+        after = {key: value for key, value in files(work).items() if key not in injected}
         state_after = git_state(work, adapter.tools()["git"])
         trace["runner_identity"] = {"before": state_before, "after": state_after}
         trace["runner_checks"] = [] if dry or rc != 0 else _runner_checks(work, expected, adapter)

@@ -132,6 +132,9 @@ class GrokAdapter(EvalAdapter):
         return declared
 
     # -- per-case lifecycle ----------------------------------------------
+    def injected_paths(self, work: Path) -> tuple[str, ...]:
+        return ("AGENTS.md", *[f".grok/agents/{path.name}" for path in sorted((work / ".grok" / "agents").glob("*.md"))])
+
     def prepare(self, work: Path, snapshot: Path, effort: str) -> None:
         # Candidate injection via cwd discovery; prompt_context.json records it.
         self.snapshot_path = str(snapshot)

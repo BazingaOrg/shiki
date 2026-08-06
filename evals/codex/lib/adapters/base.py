@@ -73,6 +73,11 @@ class EvalAdapter:
         raise NotImplementedError
 
     # -- per-case lifecycle ----------------------------------------------
+    def injected_paths(self, work: Path) -> tuple[str, ...]:
+        """Work-relative files installed by prepare(); they are runner-controlled,
+        not fixture content, and must not enter before/after hashing or fixture digests."""
+        return ()
+
     def prepare(self, work: Path, snapshot: Path, effort: str) -> None:
         """Isolation setup before the run (may keep adapter state)."""
 
