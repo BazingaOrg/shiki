@@ -121,6 +121,32 @@ class EvaluationTests(unittest.TestCase):
             trace = M.normalize_trace(paths)
             self.assertEqual({item["reason"] for item in trace["unknown"]}, {"invalid-json", "unknown-tool"})
 
+    def test_undeclared_role_is_routing_evidence_not_schema_unknown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            child = Path(directory) / "child.jsonl"
+            child.write_text("\n".join([
+                '{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"agent_role":"general-purpose"}}}}}',
+                '{"type":"turn_context","payload":{"model":"m","effort":"e","sandbox_policy":"s"}}',
+            ]) + "\n")
+            parent = Path(directory) / "parent.jsonl"
+            parent.write_text("\n".join([
+                '{"type":"session_meta","payload":{"id":"parent"}}',
+                '{"type":"turn_context","payload":{"model":"m","effort":"e","sandbox_policy":"s"}}',
+            ]) + "\n")
+            events = Path(directory) / "events.jsonl"
+            events.write_text('{"type":"turn.completed","usage":{}}\n')
+            output = Path(directory) / "out"
+            output.mkdir()
+            paths, _ = write_session_evidence([parent, child], output)
+            trace = M.normalize_trace(paths, events)
+            self.assertEqual([item["role"] for item in trace["undeclared"]], ["general-purpose"])
+            self.assertNotIn("unknown-agent-role", {item["reason"] for item in trace["unknown"]})
+            self.assertEqual(trace["native_agents"][0]["role"], "general-purpose")
+            case = {"id": "x", "kind": "policy", "expected": {"hard_gate": True, "routing": {"all_of": ["qa-runner"], "ordered_roles": ["qa-runner"]}, "runtime": [{"role": "qa-runner"}]}}
+            graded = M.grade(case, {}, {}, trace, None)
+            self.assertEqual(graded["hard_status"], "UNKNOWN")  # expected role runtime never observed
+            self.assertEqual(graded["behavioral_status"], "FAIL")  # routing evidence mismatch
+
     def test_unknown_cli_event_fails_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)

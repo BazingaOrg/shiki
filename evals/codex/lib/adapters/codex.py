@@ -107,6 +107,7 @@ class CodexAdapter(EvalAdapter):
     def run(self, work: Path, prompt: str, model: str, effort: str, timeout: int) -> tuple[int, str, str]:
         env = {key: os.environ[key] for key in ENV_ALLOWLIST if key in os.environ}
         env["CODEX_HOME"] = str(self.home)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"  # test runs must not leave bytecode artifacts
         return run_process(self.invocation(work, prompt, model, effort), prompt=prompt, env=env, cwd=work, timeout=timeout)
 
     def cleanup(self) -> None:

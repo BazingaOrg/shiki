@@ -147,7 +147,9 @@ class GrokAdapter(EvalAdapter):
         return [self.info["binary"], "--single", prompt, "--cwd", str(work.resolve()), "--output-format", "streaming-json", "--permission-mode", "auto", "--reasoning-effort", effort, "--model", model, "--disable-web-search", "--no-memory"]
 
     def run(self, work: Path, prompt: str, model: str, effort: str, timeout: int) -> tuple[int, str, str]:
-        return run_process(self.invocation(work, prompt, model, effort), prompt="", env=dict(os.environ), cwd=work, timeout=timeout)
+        env = dict(os.environ)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"  # test runs must not leave bytecode artifacts
+        return run_process(self.invocation(work, prompt, model, effort), prompt="", env=env, cwd=work, timeout=timeout)
 
     def cleanup(self) -> None:
         pass

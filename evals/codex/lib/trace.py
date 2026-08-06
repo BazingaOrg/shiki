@@ -14,6 +14,7 @@ SESSION_TYPES = {"session_meta", "turn_context", "response_item", "session_lifec
 def normalize_trace(paths: list[Path], events: Path | None = None) -> dict[str, Any]:
     sessions: list[dict[str, Any]] = []
     unknown: list[dict[str, Any]] = []
+    undeclared: list[dict[str, Any]] = []
     tokens: dict[str, int] = {}
     parent: dict[str, Any] | None = None
     child_write_capable_attempts = 0
@@ -51,10 +52,11 @@ def normalize_trace(paths: list[Path], events: Path | None = None) -> dict[str, 
                 role = event.get("agent_role")
                 session["is_child"] = bool(role)
                 if role:
+                    # A spawn of an undeclared agent type is routing evidence, not a
+                    # schema problem: it fails the routing contract instead of UNKNOWN.
+                    session["role"] = role
                     if role not in ROLES:
-                        unknown.append({"file": path.name, "line": line_number, "reason": "unknown-agent-role"})
-                    else:
-                        session["role"] = role
+                        undeclared.append({"file": path.name, "line": line_number, "role": role})
             elif typ == "turn_context":
                 if not {"model", "effort", "sandbox_policy"} <= set(event):
                     unknown.append({"file": path.name, "line": line_number, "reason": "unknown-turn-context"})
@@ -106,5 +108,6 @@ def normalize_trace(paths: list[Path], events: Path | None = None) -> dict[str, 
         "child_write_capable_attempts": child_write_capable_attempts,
         "tokens": tokens,
         "unknown": unknown,
+        "undeclared": undeclared,
         "health": {"ok": not health_missing, "missing": health_missing},
     }

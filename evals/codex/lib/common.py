@@ -40,7 +40,8 @@ def utc() -> str:
 
 
 def files(root: Path) -> dict[str, str]:
-    return {str(p.relative_to(root)): sha(p) for p in sorted(root.rglob("*")) if p.is_file() and ".git" not in p.parts}
+    # __pycache__ holds deterministic bytecode artifacts of any test run, not source changes.
+    return {str(p.relative_to(root)): sha(p) for p in sorted(root.rglob("*")) if p.is_file() and ".git" not in p.parts and "__pycache__" not in p.parts}
 
 
 def changed(before: dict[str, str], after: dict[str, str]) -> list[str]:
