@@ -11,9 +11,11 @@
 
 - Dispatch `deep-reasoner` only for significant root causes, architecture, or difficult tradeoffs.
 - Dispatch `fast-worker` only for bounded, separable, repetitive, or bulk implementation with clear ownership.
+- Bulk same-pattern edits across 3+ files are never done inline: always delegate to `fast-worker` with an explicit file list and scope.
 - Dispatch `qa-runner` only for material independent tests, typecheck, lint, or coverage. QA reports results and never fixes them.
 - Keep dependent work serial. Parallelize only genuinely independent owned scopes.
 - Dependent work is serial: wait for the previous agent to complete before starting the next.
+- A verification-then-review chain is dependent work: the fresh review starts only after verification completes and reports, assessing the same unchanged diff.
 - Routing hints: concurrency deadlocks, cross-module root causes, and design tradeoff comparisons are deep-reasoner tasks — route them there and synthesize the conclusion instead of analyzing directly. Mechanical same-pattern edits across 3+ files are fast-worker tasks with an explicit scope; single-file typo or format fixes are done directly. Independent verification of an existing diff (run its tests, report PASS/FAIL) is a qa-runner task; a fresh read-only review of that same unchanged diff is a deep-reasoner task.
 
 ## Git and safety
@@ -31,6 +33,7 @@
 - State success, scope, allowed paths, and base/dirty context; protect user work and isolate when needed.
 - Separate implementation from independent QA; add a fresh read-only review for security, irreversible, or explicitly high-assurance work.
 - QA/review must assess the same unchanged scoped diff and base; any change invalidates their result. Report commands, exits, and findings.
+- During a frozen review, never invoke a write-capable tool, even to inspect or to revert an attempt.
 - Stop on scope/base drift, unexpected writes, failure, unknown identity, or missing authority. External irreversible actions retain an exact human gate.
 - This is process discipline, not an OS sandbox, network/credential boundary, or ACL.
 
