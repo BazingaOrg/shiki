@@ -444,7 +444,7 @@ class EvaluationTests(unittest.TestCase):
             work = root / "work"
             work.mkdir()
             fake_home = root / "fake-home"
-            encoded = str(work.resolve()).replace("/", "-")
+            encoded = str(work.resolve()).replace("/", "-").replace("_", "-")
             proj = fake_home / ".claude" / "projects" / encoded
             proj.mkdir(parents=True)
             parent = proj / "parent-111.jsonl"
@@ -478,6 +478,13 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(agent["runtime"]["model"], "deepseek-v4-flash")
             self.assertEqual(trace["child_write_capable_attempts"], 1)
             self.assertEqual(agent["outcome"], "completed")
+
+    def test_claude_project_path_encoding_maps_underscores(self):
+        from lib.adapters.claude import _encode_project_path
+        work = Path("/var/folders/ab/T/shiki-eval-fixture-yuwu2q_c")
+        encoded = str(work.resolve()).replace("/", "-").replace("_", "-")
+        self.assertEqual(_encode_project_path(work), encoded)
+        self.assertNotIn("_", _encode_project_path(work))
 
     def test_claude_runtime_contract_is_observation_only(self):
         adapter = ClaudeAdapter()

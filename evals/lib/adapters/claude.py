@@ -36,7 +36,7 @@ from .base import EvalAdapter
 VERSION = re.compile(r"\b\d+\.\d+\.\d+\b")
 RUNTIME_FIELDS = ("name", "model")
 WRITE_TOOLS = {"Edit", "Write", "NotebookEdit", "MultiEdit", "apply_patch"}
-KNOWN_NON_EVIDENCE_TOOLS = {"Read", "Bash", "Grep", "Glob", "LS", "TodoWrite", "WebFetch", "WebSearch", "Task", "Agent", "KillShell", "KillBash", "TaskStop", "SendMessage", "Wait"}
+KNOWN_NON_EVIDENCE_TOOLS = {"Read", "Bash", "Grep", "Glob", "LS", "TodoWrite", "WebFetch", "WebSearch", "Task", "Agent", "KillShell", "KillBash", "TaskStop", "SendMessage", "Wait", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskOutput"}
 KNOWN_NON_EVIDENCE_STREAM = {"system", "user"}
 
 
@@ -61,7 +61,9 @@ def _frontmatter(path: Path) -> dict[str, str]:
 
 
 def _encode_project_path(path: Path) -> str:
-    return str(path.resolve()).replace("/", "-")
+    # claude encodes both "/" and "_" in the cwd as "-" (probe-verified); mkdtemp
+    # suffixes occasionally contain underscores, so both must map.
+    return str(path.resolve()).replace("/", "-").replace("_", "-")
 
 
 class ClaudeAdapter(EvalAdapter):
