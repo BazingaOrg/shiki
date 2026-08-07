@@ -32,7 +32,10 @@ def normalize_trace(paths: list[Path], events: Path | None = None) -> dict[str, 
                 unknown.append({"file": path.name, "line": line_number, "reason": "unknown-event-type"})
                 continue
             if typ == "evidence_anomaly":
-                unknown.append({"file": path.name, "line": line_number, "reason": event.get("reason", "evidence-anomaly")})
+                record = {"file": path.name, "line": line_number, "reason": event.get("reason", "evidence-anomaly")}
+                if "event_type" in event:
+                    record["event_type"] = event["event_type"]
+                unknown.append(record)
                 continue
             if typ == "session_write_attempt":
                 if session.get("role"):
@@ -77,7 +80,10 @@ def normalize_trace(paths: list[Path], events: Path | None = None) -> dict[str, 
                 unknown.append({"file": events.name, "line": line_number, "reason": "invalid-json"})
                 continue
             if event.get("type") == "evidence_anomaly":
-                unknown.append({"file": events.name, "line": line_number, "reason": event.get("reason", "evidence-anomaly")})
+                record = {"file": events.name, "line": line_number, "reason": event.get("reason", "evidence-anomaly")}
+                if "event_type" in event:
+                    record["event_type"] = event["event_type"]
+                unknown.append(record)
                 continue
             if event.get("type") == "turn.completed":
                 exec_completed = True

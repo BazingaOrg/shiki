@@ -34,7 +34,7 @@ from .base import EvalAdapter
 
 RUNTIME_FIELDS = ("name", "model")
 WRITE_TOOLS = {"Edit", "Write", "NotebookEdit", "MultiEdit", "apply_patch"}
-KNOWN_NON_EVIDENCE_TOOLS = {"Read", "Bash", "Grep", "Glob", "LS", "TodoWrite", "WebFetch", "WebSearch", "Task", "Agent", "KillShell", "KillBash", "TaskStop", "SendMessage", "Wait", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskOutput"}
+KNOWN_NON_EVIDENCE_TOOLS = {"Read", "Bash", "Grep", "Glob", "LS", "TodoWrite", "WebFetch", "WebSearch", "Task", "Agent", "KillShell", "KillBash", "TaskStop", "SendMessage", "Wait", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskOutput", "Monitor"}
 KNOWN_NON_EVIDENCE_STREAM = {"system", "user"}
 
 
@@ -136,7 +136,7 @@ class ClaudeAdapter(EvalAdapter):
             elif typ in KNOWN_NON_EVIDENCE_STREAM:
                 continue
             else:
-                lines.append(json.dumps({"type": "evidence_anomaly", "reason": "unknown-event-type"}))
+                lines.append(json.dumps({"type": "evidence_anomaly", "reason": "unknown-event-type", "event_type": typ}))
         dest = output / "events.jsonl"
         dest.write_text("\n".join(lines) + ("\n" if lines else ""))
         return dest, []

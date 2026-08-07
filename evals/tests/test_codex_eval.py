@@ -479,6 +479,36 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(trace["child_write_capable_attempts"], 1)
             self.assertEqual(agent["outcome"], "completed")
 
+    def test_claude_monitor_tool_is_non_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            work = root / "work"
+            work.mkdir()
+            fake_home = root / "fake-home"
+            encoded = str(work.resolve()).replace("/", "-").replace("_", "-")
+            proj = fake_home / ".claude" / "projects" / encoded
+            proj.mkdir(parents=True)
+            parent = proj / "parent-111.jsonl"
+            container = proj / "child-222"
+            (container / "subagents").mkdir(parents=True)
+            parent.write_text("\n".join([
+                '{"type":"user","message":{"role":"user","content":[]},"timestamp":"2026-08-07T00:00:00Z"}',
+                '{"type":"assistant","message":{"model":"m","content":[{"type":"tool_use","name":"Agent","id":"call_1","input":{"subagent_type":"qa-runner"}}]},"timestamp":"2026-08-07T00:00:01Z"}',
+            ]) + "\n")
+            (container / "subagents" / "agent-m1.jsonl").write_text("\n".join([
+                '{"type":"user","message":{"role":"user","content":[]},"timestamp":"2026-08-07T00:00:02Z"}',
+                '{"type":"assistant","message":{"model":"m","content":[{"type":"tool_use","name":"Monitor","input":{}},{"type":"tool_use","name":"Read","input":{}}]},"timestamp":"2026-08-07T00:00:03Z"}',
+            ]) + "\n")
+            (container / "subagents" / "agent-m1.meta.json").write_text('{"agentType":"qa-runner","toolUseId":"call_1"}')
+            events = root / "events.jsonl"
+            events.write_text('{"type":"turn.completed","usage":{}}\n')
+            with mock.patch("pathlib.Path.home", return_value=fake_home):
+                adapter = ClaudeAdapter()
+                adapter.session_id = "parent-111"
+                paths, _ = adapter.session_evidence(work, root / "out")
+            trace = M.normalize_trace(paths, events)
+            self.assertEqual(trace["unknown"], [])
+
     def test_claude_project_path_encoding_maps_underscores(self):
         from lib.adapters.claude import _encode_project_path
         work = Path("/var/folders/ab/T/shiki-eval-fixture-yuwu2q_c")

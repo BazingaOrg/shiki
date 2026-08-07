@@ -142,7 +142,7 @@ class GrokAdapter(EvalAdapter):
             elif typ in KNOWN_NON_EVIDENCE_ACP:
                 continue
             else:
-                lines.append(json.dumps({"type": "evidence_anomaly", "reason": "unknown-event-type"}))
+                lines.append(json.dumps({"type": "evidence_anomaly", "reason": "unknown-event-type", "event_type": typ}))
         dest = output / "events.jsonl"
         dest.write_text("\n".join(lines) + ("\n" if lines else ""))
         return dest, sorted(pattern for pattern in patterns if pattern != "local-path")

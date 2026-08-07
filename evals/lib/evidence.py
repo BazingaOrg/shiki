@@ -184,7 +184,7 @@ def write_events_evidence(stdout: str, output: Path) -> tuple[Path, list[str]]:
         typ = event.get("type")
         item = event.get("item") if isinstance(event.get("item"), dict) else {}
         if typ not in ALLOWED_EVENT_TYPES:
-            lines.append(json.dumps({"type": "evidence_anomaly", "reason": "unknown-event-type"}))
+            lines.append(json.dumps({"type": "evidence_anomaly", "reason": "unknown-event-type", "event_type": typ}))
             continue
         if item and item.get("type") not in ALLOWED_ITEM_TYPES | KNOWN_NON_EVIDENCE_ITEM_TYPES:
             lines.append(json.dumps({"type": "evidence_anomaly", "reason": "unknown-item-type"}))
