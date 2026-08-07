@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from lib.adapters import ADAPTERS, get_adapter
+from lib.adapters.base import exact_runtime
 from lib.common import ROLES, changed, digest, dump, files, load, redact_text, safe_relative, sha, utc
 from lib.compare import compare_summaries
 from lib.evidence import secret_patterns, verify_run, write_evidence_index, write_summary_attestation
@@ -69,7 +70,8 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
         errors.append("unsupported schema_version")
     if set(manifest) - {"schema_version", "comparison", "cases"}:
         errors.append("unknown manifest field")
-    if not isinstance(manifest.get("comparison", {}).get("min_effect", 0.2), (int, float)) or not 0 <= manifest.get("comparison", {}).get("min_effect", 0.2) <= 1:
+    min_effect = manifest.get("comparison", {}).get("min_effect", 0.2)
+    if not isinstance(min_effect, (int, float)) or not 0 <= min_effect <= 1:
         errors.append("bad comparison.min_effect")
     for case in manifest.get("cases", []):
         ident = case.get("id", "?")
@@ -117,7 +119,7 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
 
 
 def _runtime_status(expected: dict[str, Any], trace: dict[str, Any], contract: Any = None) -> tuple[str, str]:
-    check = contract or _exact_runtime
+    check = contract or exact_runtime
     for wanted in expected.get("runtime", []):
         actual = next((item.get("runtime") for item in trace["native_agents"] if item["role"] == wanted["role"]), None)
         if not actual or any(actual.get(key) is None for key in ("model", "effort", "sandbox_policy")):
@@ -125,12 +127,6 @@ def _runtime_status(expected: dict[str, Any], trace: dict[str, Any], contract: A
         if not check(wanted, actual):
             return "FAIL", "runtime contract mismatch"
     return "PASS", "runtime matched"
-
-
-def _exact_runtime(declared: dict[str, Any], actual: dict[str, Any]) -> bool:
-    sandbox = actual.get("sandbox_policy")
-    sandbox_type = sandbox.get("type") if isinstance(sandbox, dict) else sandbox
-    return actual.get("model") == declared["model"] and actual.get("effort") == declared["effort"] and sandbox_type == declared["sandbox_type"]
 
 
 def _normalize_command(value: Any) -> str:
@@ -232,6 +228,10 @@ def _runner_checks(work: Path, expected: dict[str, Any], adapter: Any) -> list[d
     return results
 
 
+def _result_row(case: dict[str, Any], before: dict[str, str], snapshot: dict[str, object], started: float, graded: dict[str, Any], runtime: list[dict[str, Any]], tokens: dict[str, int]) -> dict[str, Any]:
+    return {"case": case["id"], "kind": case["kind"], "fixture": case["fixture"], "case_digest": digest(case), "fixture_digest": digest({"kind": case["fixture"], "before": before}), "config_digest": snapshot["hash"], "candidate_hashes": snapshot["hashes"], "actual_child_runtime": runtime, "latency_seconds": round(time.monotonic() - started, 3), "tokens": tokens, "grade": graded}
+
+
 def run_one(case: dict[str, Any], output: Path, dry: bool, model: str, effort: str, timeout: int, snapshot: dict[str, object], adapter: Any, declared: dict[str, dict[str, str]]) -> dict[str, Any]:
     work = Path(tempfile.mkdtemp(prefix="shiki-eval-fixture-"))
     started = time.monotonic()
@@ -260,7 +260,7 @@ def run_one(case: dict[str, Any], output: Path, dry: bool, model: str, effort: s
             dump(output / "infra.json", infra_diagnostic(rc, stdout, stderr))
         graded = grade({**case, "expected": expected}, before, after, trace, infra, dry, adapter.runtime_contract)
         dump(output / "grade.json", graded)
-        return {"case": case["id"], "kind": case["kind"], "fixture": case["fixture"], "case_digest": digest(case), "fixture_digest": digest({"kind": case["fixture"], "before": before}), "config_digest": snapshot["hash"], "candidate_hashes": snapshot["hashes"], "actual_child_runtime": trace["native_agents"], "latency_seconds": round(time.monotonic() - started, 3), "tokens": trace["tokens"], "grade": graded}
+        return _result_row(case, before, snapshot, started, graded, trace["native_agents"], trace["tokens"])
     except TimeoutError:
         after = files(work)
         state_after = git_state(work, adapter.tools()["git"])
@@ -269,7 +269,7 @@ def run_one(case: dict[str, Any], output: Path, dry: bool, model: str, effort: s
         dump(output / "infra.json", {"exit_code": None, "category": "timeout", "retry_at": None})
         graded = {"hard_gate": case["expected"].get("hard_gate", False), "hard_status": "INFRA_ERROR", "behavioral_status": "UNKNOWN", "status": "INFRA_ERROR", "reason": "timeout", "changed_paths": []}
         dump(output / "grade.json", graded)
-        return {"case": case["id"], "kind": case["kind"], "fixture": case["fixture"], "case_digest": digest(case), "fixture_digest": digest({"kind": case["fixture"], "before": before}), "config_digest": snapshot["hash"], "candidate_hashes": snapshot["hashes"], "actual_child_runtime": [], "latency_seconds": round(time.monotonic() - started, 3), "tokens": {}, "grade": graded}
+        return _result_row(case, before, snapshot, started, graded, [], {})
     finally:
         shutil.rmtree(work, ignore_errors=True)
         adapter.cleanup()
@@ -359,7 +359,10 @@ def compare(args: argparse.Namespace) -> int:
         manual_valid = manual and baseline_digest == digest(baseline_core)
         if (manual and not manual_valid) or (not manual and not verify_run(run_dir, summary)):
             report = {"status": "CONFOUNDED", "confounders": [f"{label}_evidence_root_invalid"], "cases": [], "rule": "local evidence root must verify"}
-            dump(args.output_json, report); Path(args.output_report).write_text(_report_compare(report)); print(json.dumps(report, ensure_ascii=False)); return 2
+            dump(args.output_json, report)
+            Path(args.output_report).write_text(_report_compare(report))
+            print(json.dumps(report, ensure_ascii=False))
+            return 2
     report = compare_summaries(baseline, candidate, wilson, args.min_effect)
     dump(args.output_json, report)
     Path(args.output_report).write_text(_report_compare(report))
@@ -371,7 +374,8 @@ def compare(args: argparse.Namespace) -> int:
 
 def promote(args: argparse.Namespace) -> int:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", args.name):
-        print(json.dumps({"status": "PROMOTION_REFUSED", "reasons": ["unsafe_name"]})); return 2
+        print(json.dumps({"status": "PROMOTION_REFUSED", "reasons": ["unsafe_name"]}))
+        return 2
     source = _summary_path(args.run)
     try:
         summary = load(source)
@@ -385,10 +389,13 @@ def promote(args: argparse.Namespace) -> int:
     if any(r.get("kind") == "policy" and r.get("grade", {}).get("behavioral_status") != "PASS" for r in summary.get("results", [])): failures.append("incomplete_behavior")
     if any("secret scan" in str(r.get("grade", {}).get("reason", "")) for r in summary.get("results", [])): failures.append("secret_scan")
     if failures:
-        print(json.dumps({"status": "PROMOTION_REFUSED", "reasons": failures})); return 2
+        print(json.dumps({"status": "PROMOTION_REFUSED", "reasons": failures}))
+        return 2
     target = ROOT / "baselines" / f"{args.name}.json"
     target.parent.mkdir(exist_ok=True)
-    if target.exists(): print(json.dumps({"status": "PROMOTION_REFUSED", "reasons": ["baseline_exists"]})); return 2
+    if target.exists():
+        print(json.dumps({"status": "PROMOTION_REFUSED", "reasons": ["baseline_exists"]}))
+        return 2
     baseline = {key: summary.get(key) for key in ("generated_at", "runner_sha256", "manifest_sha256", "repetitions", "metrics", "source_drift", "evidence_root", "config_digest", "candidate_hashes", "suite", "model", "cli_adapter", "cli_version", "executable_sha256", "toolchain_digest", "network_env_digest", "dry_run")}
     baseline["results"] = [{key: row.get(key) for key in ("case", "kind", "case_digest", "fixture_digest", "grade")} for row in summary.get("results", [])]
     baseline.update({"manual_promoted": True, "immutable": True, "promoted_from": source.parent.name, "promoted_at": utc()})

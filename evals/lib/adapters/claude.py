@@ -24,40 +24,18 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 from pathlib import Path
 from typing import Any
 
-from ..common import digest, sha
-from ..evidence import _safe, secret_patterns, usage_values
+from ..common import frontmatter
+from ..evidence import _safe, usage_values
 from ..runtime import run_process
 from .base import EvalAdapter
 
-VERSION = re.compile(r"\b\d+\.\d+\.\d+\b")
 RUNTIME_FIELDS = ("name", "model")
 WRITE_TOOLS = {"Edit", "Write", "NotebookEdit", "MultiEdit", "apply_patch"}
 KNOWN_NON_EVIDENCE_TOOLS = {"Read", "Bash", "Grep", "Glob", "LS", "TodoWrite", "WebFetch", "WebSearch", "Task", "Agent", "KillShell", "KillBash", "TaskStop", "SendMessage", "Wait", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskOutput"}
 KNOWN_NON_EVIDENCE_STREAM = {"system", "user"}
-
-
-def _frontmatter(path: Path) -> dict[str, str]:
-    """Minimal YAML frontmatter reader: single-line scalar keys only."""
-    text = path.read_text()
-    if not text.startswith("---"):
-        return {}
-    end = text.find("\n---", 3)
-    block = text[3:end] if end != -1 else text[3:]
-    result: dict[str, str] = {}
-    for line in block.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or ":" not in stripped:
-            continue
-        key, _, value = stripped.partition(":")
-        value = value.strip()
-        if not value or value in {">", "|"}:
-            continue
-        result[key.strip()] = value.strip('"\'')
-    return result
 
 
 def _encode_project_path(path: Path) -> str:
@@ -69,7 +47,7 @@ def _encode_project_path(path: Path) -> str:
 class ClaudeAdapter(EvalAdapter):
     name = "claude"
     binary = "claude"
-    VERSION = VERSION
+    VERSION = re.compile(r"\b\d+\.\d+\.\d+\b")
     default_model = None  # the user's configured model is the evaluated environment
     prompt_via = "argv"
 
@@ -89,22 +67,10 @@ class ClaudeAdapter(EvalAdapter):
         return [repo / "CLAUDE.md", *sorted((repo / "agents").glob("*.md"))]
 
     def snapshot(self, repo: Path, output: Path) -> dict[str, object]:
-        snap = output / "candidate-snapshot"
-        snap.mkdir(mode=0o700)
-        hashes: dict[str, str] = {}
-        paths = self.candidate_paths(repo)
-        mds = [path for path in paths if path.suffix == ".md"]
+        mds = [path for path in self.candidate_paths(repo) if path.suffix == ".md"]
         if not (repo / "CLAUDE.md").is_file() or not mds:
             raise RuntimeError("candidate must contain CLAUDE.md and at least one agent profile")
-        for source in paths:
-            rel = source.relative_to(repo)
-            copy_rel = "CLAUDE.md" if rel == Path("CLAUDE.md") else rel
-            dest = snap / copy_rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, dest)
-            os.chmod(dest, 0o600)
-            hashes[str(rel)] = sha(dest)
-        return {"path": str(snap), "hashes": hashes, "hash": digest(hashes)}
+        return self._snapshot_candidates(repo, output, repo)
 
     def declared_runtime(self, snapshot: Path) -> dict[str, dict[str, str]]:
         agents_dir = snapshot / "agents"
@@ -112,7 +78,7 @@ class ClaudeAdapter(EvalAdapter):
             raise RuntimeError("candidate snapshot must contain CLAUDE.md and an agents/ directory")
         declared: dict[str, dict[str, str]] = {}
         for path in sorted(agents_dir.glob("*.md")):
-            data = _frontmatter(path)
+            data = frontmatter(path)
             missing = [field for field in RUNTIME_FIELDS if not data.get(field)]
             if missing:
                 raise RuntimeError(f"agent profile {path.name} must declare: {', '.join(missing)}")
@@ -130,15 +96,10 @@ class ClaudeAdapter(EvalAdapter):
 
     # -- per-case lifecycle ----------------------------------------------
     def injected_paths(self, work: Path) -> tuple[str, ...]:
-        return ("CLAUDE.md", *[f".claude/agents/{path.name}" for path in sorted((work / ".claude" / "agents").glob("*.md"))])
+        return self._injected_instruction_paths(work, "CLAUDE.md", ".claude/agents")
 
     def prepare(self, work: Path, snapshot: Path, effort: str) -> None:
-        # Candidate injection via cwd discovery.
-        shutil.copyfile(snapshot / "CLAUDE.md", work / "CLAUDE.md")
-        agents_dir = work / ".claude" / "agents"
-        agents_dir.mkdir(parents=True)
-        for path in sorted((snapshot / "agents").glob("*.md")):
-            shutil.copyfile(path, agents_dir / path.name)
+        self._inject_cwd_instructions(work, snapshot, "CLAUDE.md", ".claude/agents")
 
     def invocation(self, work: Path, prompt: str, model: str, effort: str) -> list[str]:
         argv = [self.info["binary"], "-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits"]

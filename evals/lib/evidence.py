@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .common import SENSITIVE_KEY, digest, dump, redact_text, sha
+from .common import SENSITIVE_KEY, digest, dump, load, redact_text, sha
 
 ALLOWED_EVENT_TYPES = {"thread.started", "turn.started", "turn.completed", "item.started", "item.completed"}
 ALLOWED_ITEM_TYPES = {"command_execution", "collabToolCall", "collab_tool_call", "file_change"}
@@ -241,11 +241,7 @@ def verify_evidence_root(output: Path, expected: str) -> bool:
 
 def verify_run(output: Path, summary: dict[str, Any]) -> bool:
     attestation = output / "summary-core.json"
-    return attestation.is_file() and load_json(attestation) == summary_core(summary) and verify_evidence_root(output, summary.get("evidence_root", ""))
-
-
-def load_json(path: Path) -> Any:
-    return json.loads(path.read_text())
+    return attestation.is_file() and load(attestation) == summary_core(summary) and verify_evidence_root(output, summary.get("evidence_root", ""))
 
 
 def write_evidence_index(output: Path) -> str:

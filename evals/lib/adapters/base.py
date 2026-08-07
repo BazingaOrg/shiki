@@ -8,6 +8,7 @@ lib/trace.py.
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -15,6 +16,13 @@ from pathlib import Path
 from typing import Any
 
 from ..common import digest, sha
+
+
+def exact_runtime(declared: dict[str, str], actual: dict[str, Any]) -> bool:
+    """Exact-equality runtime contract; codex's sandbox is enforced by the CLI."""
+    sandbox = actual.get("sandbox_policy")
+    sandbox_type = sandbox.get("type") if isinstance(sandbox, dict) else sandbox
+    return actual.get("model") == declared["model"] and actual.get("effort") == declared["effort"] and sandbox_type == declared["sandbox_type"]
 
 
 class EvalAdapter:
@@ -48,12 +56,10 @@ class EvalAdapter:
     def runtime_contract(self, declared: dict[str, str], actual: dict[str, Any]) -> bool:
         """Whether observed runtime (model/effort/sandbox_policy) satisfies the declared contract.
 
-        The base contract is exact equality (codex sandbox is enforced by the CLI);
-        adapters whose CLI lets the model choose capabilities override this.
+        The base contract is exact equality; adapters whose CLI lets the model
+        choose capabilities (or not assert runtime at all) override this.
         """
-        sandbox = actual.get("sandbox_policy")
-        sandbox_type = sandbox.get("type") if isinstance(sandbox, dict) else sandbox
-        return actual.get("model") == declared["model"] and actual.get("effort") == declared["effort"] and sandbox_type == declared["sandbox_type"]
+        return exact_runtime(declared, actual)
 
     # -- candidate -------------------------------------------------------
     def candidate_paths(self, repo: Path) -> list[Path]:
@@ -61,6 +67,19 @@ class EvalAdapter:
 
     def candidate_hashes(self, repo: Path) -> dict[str, str]:
         return {str(path.relative_to(repo)): sha(path) for path in self.candidate_paths(repo)}
+
+    def _snapshot_candidates(self, repo: Path, output: Path, root: Path) -> dict[str, object]:
+        """Copy the candidate files once; later cases never reread repository candidates."""
+        snap = output / "candidate-snapshot"
+        snap.mkdir(mode=0o700)
+        hashes: dict[str, str] = {}
+        for source in self.candidate_paths(repo):
+            dest = snap / source.relative_to(root)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, dest)
+            os.chmod(dest, 0o600)
+            hashes[str(source.relative_to(repo))] = sha(dest)
+        return {"path": str(snap), "hashes": hashes, "hash": digest(hashes)}
 
     def snapshot(self, repo: Path, output: Path) -> dict[str, object]:
         raise NotImplementedError
@@ -77,6 +96,17 @@ class EvalAdapter:
         """Work-relative files installed by prepare(); they are runner-controlled,
         not fixture content, and must not enter before/after hashing or fixture digests."""
         return ()
+
+    def _injected_instruction_paths(self, work: Path, instructions: str, agents_dir: str) -> tuple[str, ...]:
+        return (instructions, *[f"{agents_dir}/{path.name}" for path in sorted((work / agents_dir).glob("*.md"))])
+
+    def _inject_cwd_instructions(self, work: Path, snapshot: Path, instructions: str, agents_dir: str) -> None:
+        """Candidate injection via cwd discovery: instruction file plus agent profiles."""
+        shutil.copyfile(snapshot / instructions, work / instructions)
+        target = work / agents_dir
+        target.mkdir(parents=True)
+        for path in sorted((snapshot / "agents").glob("*.md")):
+            shutil.copyfile(path, target / path.name)
 
     def prepare(self, work: Path, snapshot: Path, effort: str) -> None:
         """Isolation setup before the run (may keep adapter state)."""

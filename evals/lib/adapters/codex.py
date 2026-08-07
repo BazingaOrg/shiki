@@ -7,21 +7,18 @@ import shutil
 import tempfile
 import tomllib
 from pathlib import Path
-from typing import Any
 
-from ..common import digest, sha
 from ..evidence import write_events_evidence, write_session_evidence
 from ..runtime import ENV_ALLOWLIST, run_process
 from .base import EvalAdapter
 
-VERSION = re.compile(r"\b0\.146\.\d+\b")
 RUNTIME_FIELDS = ("model", "model_reasoning_effort", "sandbox_mode")
 
 
 class CodexAdapter(EvalAdapter):
     name = "codex"
     binary = "codex"
-    VERSION = VERSION
+    VERSION = re.compile(r"\b0\.146\.\d+\b")
     default_model = "gpt-5.6-sol"
     prompt_via = "stdin"
 
@@ -30,23 +27,10 @@ class CodexAdapter(EvalAdapter):
         return [repo / "codex" / "AGENTS.md", *sorted((repo / "codex" / "agents").glob("*.toml"))]
 
     def snapshot(self, repo: Path, output: Path) -> dict[str, object]:
-        """Copy the candidate files once; later cases never reread repository candidates."""
-        snap = output / "candidate-snapshot"
-        snap.mkdir(mode=0o700)
-        hashes: dict[str, str] = {}
-        paths = self.candidate_paths(repo)
-        tomls = [path for path in paths if path.suffix == ".toml"]
+        tomls = [path for path in self.candidate_paths(repo) if path.suffix == ".toml"]
         if not (repo / "codex" / "AGENTS.md").is_file() or not tomls:
             raise RuntimeError("candidate must contain codex/AGENTS.md and at least one agent TOML")
-        for source in paths:
-            rel = source.relative_to(repo)
-            copy_rel = source.relative_to(repo / "codex")
-            dest = snap / copy_rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, dest)
-            os.chmod(dest, 0o600)
-            hashes[str(rel)] = sha(dest)
-        return {"path": str(snap), "hashes": hashes, "hash": digest(hashes)}
+        return self._snapshot_candidates(repo, output, repo / "codex")
 
     def declared_runtime(self, snapshot: Path) -> dict[str, dict[str, str]]:
         """Declared model/effort/sandbox per custom agent, read once from the snapshot.

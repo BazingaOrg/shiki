@@ -28,14 +28,11 @@ def confounders(baseline: dict[str, Any], candidate: dict[str, Any]) -> list[str
             reasons.append(f"{field}_drift")
     if _cases(baseline) != _cases(candidate):
         reasons.append("case_set_drift")
-    base_cases = {row.get("case"): row.get("case_digest") for row in baseline.get("results", [])}
-    cand_cases = {row.get("case"): row.get("case_digest") for row in candidate.get("results", [])}
-    if base_cases != cand_cases:
-        reasons.append("case_or_fixture_drift")
-    base_fixtures = {row.get("case"): row.get("fixture_digest") for row in baseline.get("results", [])}
-    cand_fixtures = {row.get("case"): row.get("fixture_digest") for row in candidate.get("results", [])}
-    if base_fixtures != cand_fixtures:
-        reasons.append("case_or_fixture_drift")
+    for key in ("case_digest", "fixture_digest"):
+        base = {row.get("case"): row.get(key) for row in baseline.get("results", [])}
+        cand = {row.get("case"): row.get(key) for row in candidate.get("results", [])}
+        if base != cand:
+            reasons.append("case_or_fixture_drift")
     return sorted(set(reasons))
 
 

@@ -45,7 +45,8 @@ def files(root: Path) -> dict[str, str]:
 
 
 def changed(before: dict[str, str], after: dict[str, str]) -> list[str]:
-    return sorted(set(before) ^ set(after) | {key for key in before if key in after and before[key] != after[key]})
+    # A key only in one side differs from the other side's absent hash (None).
+    return sorted(key for key in set(before) | set(after) if before.get(key) != after.get(key))
 
 
 def redact_text(value: Any) -> tuple[str, list[str]]:
@@ -64,3 +65,23 @@ def redact_text(value: Any) -> tuple[str, list[str]]:
 def safe_relative(value: str) -> bool:
     path = Path(value)
     return bool(value) and not path.is_absolute() and ".." not in path.parts and "\\" not in value
+
+
+def frontmatter(path: Path) -> dict[str, str]:
+    """Minimal YAML frontmatter reader: single-line scalar keys only (block scalars skipped)."""
+    text = path.read_text()
+    if not text.startswith("---"):
+        return {}
+    end = text.find("\n---", 3)
+    block = text[3:end] if end != -1 else text[3:]
+    result: dict[str, str] = {}
+    for line in block.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or ":" not in stripped:
+            continue
+        key, _, value = stripped.partition(":")
+        value = value.strip()
+        if not value or value in {">", "|", "|-"}:
+            continue
+        result[key.strip()] = value.strip('"\'')
+    return result
