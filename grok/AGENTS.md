@@ -40,6 +40,8 @@
 ## Execution quality
 
 - State material assumptions, choose the simplest sufficient change, and follow project style.
+- Do not add code comments. Keep code self-explanatory through clear naming and structure.
+- When updating current-state documentation for a new design, replace superseded design descriptions in place. Do not retain legacy designs, migration narratives, or old-versus-new comparisons unless explicitly requested.
 - Create plans or ADRs only when the project, user, or a real cross-stage decision requires them.
 - Self-review, run relevant checks, and report performed checks, risks, and verification left to the user.
 - After each implementation round, self-review the round's diff and fix issues found, re-running affected checks; a fix invalidates prior review results, so independent QA and fresh reviews assess the final unchanged scoped diff.
