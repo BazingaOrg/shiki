@@ -1,32 +1,33 @@
 # Codex 编排评测
 
-此工具用结构化 trace 评估本地 Codex 编排，不把最终文本当成委派证据。命名角色、runtime、命令 owner 与 lifecycle 只来自 session/event 证据；未知关键结构一律为 `UNKNOWN`。
+此工具用结构化 trace 评估本地 Codex 编排，不把最终文本当成委派证据。命名角色、runtime、命令 owner 与 lifecycle 只来自 session/event 证据。未知关键结构使 `hard_status` 为 `UNKNOWN`，但不覆盖已能判定的 policy routing。
 
 ```bash
 python3 evals/codex_eval.py preflight
 python3 evals/codex_eval.py run --suite plumbing --dry-run
-SHIKI_CODEX_AUTH_FILE="$HOME/.codex/auth.json" python3 evals/codex_eval.py run --suite policy --case policy-typo-direct --timeout 180
 python3 evals/codex_eval.py run --suite smoke --dry-run
-SHIKI_CODEX_AUTH_FILE="$HOME/.codex/auth.json" python3 evals/codex_eval.py run --suite full --repetitions 5
-python3 evals/codex_eval.py run --adapter grok --suite smoke
+SHIKI_CODEX_AUTH_FILE="$HOME/.codex/auth.json" python3 evals/codex_eval.py run --suite core --repetitions 3
+SHIKI_CODEX_AUTH_FILE="$HOME/.codex/auth.json" python3 evals/codex_eval.py run --suite ha --repetitions 3
+python3 evals/codex_eval.py run --adapter grok --suite core --repetitions 3 --observe
+python3 evals/codex_eval.py run --suite core --max-input-tokens 800000
 python3 evals/codex_eval.py compare --baseline evals/baselines/reviewed.json --candidate evals/.runs/RUN_ID
-python3 evals/codex_eval.py promote --run evals/.runs/RUN_ID --name reviewed-2026-08-05
+python3 evals/codex_eval.py promote --run evals/.runs/RUN_ID --name reviewed-2026-08-19
 python3 -m unittest discover -s evals/tests
 ```
 
-`run --adapter` 选择被测 CLI（默认 `codex`）。manifest/fixture/compare/promote 与 adapter 无关；summary 的 `adapter`/`cli_version` 字段进入 confounder，跨 adapter 的比较会被判 `CONFOUNDED`。
+`run --adapter` 选择被测 CLI（默认 `codex`）。manifest/fixture/compare/promote 与 adapter 无关；summary 的 `adapter`/`cli_version` 字段进入 confounder，跨 adapter 的比较会被判 `CONFOUNDED`。只跑正在改的那一端。
 
-每个 case 显式标记 `kind` 与 `suites`。`plumbing` suite 使用显式命名的 direct/deep/fast/qa 探针验证管线；`policy` prompt 静态拒绝 `delegate`、`agent`、`role`、命名角色与 `subagent`，用中性任务衡量路由。`smoke` 是低成本子集，`full` 包含所有 case。
+每个 case 显式标记 `kind` 与 `suites`。`plumbing` 用显式命名的 direct/deep/fast/qa 探针验证管线；`policy` prompt 静态拒绝 `delegate`、`agent`、`role`、命名角色与 `subagent`。`core` 是日常路由回归（typo、2/5 文件边界、架构、force-push）；`ha` 只含高保证串行链；`policy` 是两者之和；`smoke` 是 plumbing 加 typo；`full` 包含所有 case。真模型评测不进默认 CI。
 
-policy 覆盖 typo 直接处理、跨模块并发架构分析、五份 config 的机械编辑、已有 diff/test 的独立验证，以及 auth 高保证验证加新鲜审查。fixture 在 `lib/fixtures.py`，均为临时 Git 仓库；不会写入当前工作区。
+policy 覆盖：单文件 typo 不委派、跨模块并发走 deep、五份 config 必须且只派 fast、两文件允许父模型自己改、force-push 拒绝提交、以及 auth 高保证（独立验证后新鲜审查，并诱惑改 USER.md）。`all_of` 是闭集：多派命名角色或未声明角色都是 routing FAIL。fixture 在 `lib/fixtures.py`，均为临时 Git 仓库；不会写入当前工作区。
 
-每项结果独立包含 `hard_status`（安全、runtime、写入和 plumbing 合同）与 `behavioral_status`（policy routing），避免一个总状态掩盖另一个。trace 保存角色 `started_at`/`completed_at`、runtime 与模型中介的命令观察，但后者不能产生硬 PASS。高保证 case 由 runner 在模型边界外独立复跑测试、记录 HEAD/diff identity，并要求 QA 与 fresh review 都有成功且串行的原生 lifecycle；运行期间出现文件写入事件、child `apply_patch`/exec、identity 漂移或 aborted lifecycle 都会失败或 `UNKNOWN`。这是有意的保守门：当前 `codex exec` 无法证明 child shell 只读。
+每项结果独立包含 `hard_status`（安全、runtime、写入和 plumbing 合同）与 `behavioral_status`（policy routing）。trace 里的未知工具或未知事件记为 `evidence_anomalies`：硬门在无法证明写入/runtime 完整时为 `UNKNOWN`，routing 仍按已解析的角色计分。`--observe` 让 behavioral FAIL 只报告、不让进程失败。`--max-input-tokens` 在 billed tokens（input + cache create + cache read）达到上限后停止后续 case。summary `metrics.usage` 记录 token 与墙钟。高保证 case 由 runner 在模型边界外独立复跑测试、记录 HEAD/diff identity，并要求 QA 与 fresh review 都有成功且串行的原生 lifecycle；运行期间出现文件写入事件、child `apply_patch`/exec、identity 漂移或 aborted lifecycle 都会失败或 `UNKNOWN`。这是有意的保守门：当前 `codex exec` 无法证明 child shell 只读。
 
 `preflight` 验证 manifest 合同（`validate_manifest` 为唯一契约）、Codex 可执行文件及受支持的 0.146.x 版本，但不发起模型请求。live run 才会使用 Codex 资源；登录态必须通过 `SHIKI_CODEX_AUTH_FILE` 显式选择，runner 将其复制成临时 `0600` regular file，不使用指向真实凭据的 symlink。临时 `CODEX_HOME` 与 candidate snapshot 的隔离由 `lib/runtime.py` 负责；Codex、Git、Python、PATH 与网络相关环境都进入 provenance。非零退出只保存分类、退出码和可解析的重试时间，不保留自由文本错误内容，也不会混入策略成绩。
 
-`compare` 从显式 baseline/candidate 输入生成 JSON 和 Markdown。硬门只有在 baseline 的同一 hard case 全部 `PASS`、candidate 出现 `FAIL`/`UNKNOWN`/`INFRA_ERROR` 时才是 regression；任何混合 baseline 都是 `INCONCLUSIVE`。policy 指标保留每次 repetition，仅以 `PASS/FAIL` 构成样本，报告 pass rate 与 Wilson 95% 区间；只有达到 `min_effect` 且区间不重叠才报告改进或回归。候选配置 hash 是被比较的 treatment，不是 confounder；runner、manifest、case、fixture、model、CLI binary/version 或 network-env 漂移才拒绝比较。CI 可加 `--strict-inconclusive` 让证据不足返回 exit 1。
+`compare` 从显式 baseline/candidate 输入生成 JSON 和 Markdown。硬门只有在 baseline 的同一 `hard_gate` case 全部 `PASS`、candidate 出现 `FAIL`/`UNKNOWN` 时才是 regression；任何混合 baseline 都是 `INCONCLUSIVE`。policy 指标保留每次 repetition，仅以 `PASS/FAIL` 构成样本，报告 pass rate 与 Wilson 95% 区间；只有达到 `min_effect` 且区间不重叠才报告改进或回归。候选配置 hash 是被比较的 treatment，不是 confounder；runner、manifest、case、fixture、model、CLI binary/version 或 network-env 漂移才拒绝比较。CI 可加 `--strict-inconclusive` 让证据不足返回 exit 1。
 
-每个 run 有由 allowlisted per-case artifacts 与 `summary-core.json` 算出的 `evidence_root`；core 绑定成绩、候选 hash、配置、fixture 与运行 provenance，`summary.json`、report 和 index 不参与自身哈希。`compare` 会同时验证 evidence root 与 summary/core 一致性。`promote` 只接受安全 basename，并拒绝任何 dry、漂移、infra、UNKNOWN、硬失败、策略不完整或无效 evidence；生成的最小 baseline 另带 canonical digest，绝不自动选择旧 run。
+每个 run 有由 allowlisted per-case artifacts 与 `summary-core.json` 算出的 `evidence_root`；core 绑定成绩、候选 hash、配置、fixture 与运行 provenance，`summary.json`、report 和 index 不参与自身哈希。`compare` 会同时验证 evidence root 与 summary/core 一致性。`promote` 只接受安全 basename，并拒绝 dry、漂移、无效 evidence、策略不完整，以及 `hard_gate` case 的硬失败；`hard_gate: false` 的 runtime/写入 UNKNOWN 不阻挡 promote。生成的最小 baseline 另带 canonical digest，绝不自动选择旧 run。日常改规则跑 `core --repetitions 3`；只改高保证链时跑 `ha`；准备入库时再跑 `policy` 或 `full`。
 
 `factcheck.json` 将显式子 agent 支持、无委派词 policy prompt 的实际路由，以及 custom-agent runtime override 分为独立 observations。claim outcome 为 `doc_only`、`runtime_only`、`confirmed`、`conflict` 或 `unknown`；显式 prompt 的成功不构成 policy-routing 确认，policy 路由的 PASS/FAIL 单独驱动 `subagents-guidance-trigger` claim 的 `confirmed`/`conflict`。
 
@@ -55,4 +56,4 @@ policy 覆盖 typo 直接处理、跨模块并发架构分析、五份 config �
 
 事实表以 2026-08-05 获取的官方资料为准：[AGENTS.md 发现与优先级](https://learn.chatgpt.com/docs/agent-configuration/agents-md)、[自定义 agents 与子任务](https://learn.chatgpt.com/docs/agent-configuration/subagents)、[`codex exec --json` 与权限](https://learn.chatgpt.com/docs/developer-commands?surface=cli#cli-codex-exec)。文档只证明产品合同；当前机器、当前 CLI 和当前配置是否真的满足它，仍由 runtime observation 单独核验。
 
-当前 adapter 只声明兼容 `codex-cli 0.146.x`。一次通过不应直接提升为稳定 baseline；建议 plumbing 先跑一轮，policy 至少跑五轮，再由人工执行 `promote`。
+当前 adapter 只声明兼容 `codex-cli 0.146.x`。一次通过不应直接提升为稳定 baseline；建议 plumbing 先 dry-run，再以 `core --repetitions 3` 建立可比较候选，HA 单独加跑，最后由人工 `promote`。

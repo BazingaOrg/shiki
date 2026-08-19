@@ -17,6 +17,9 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent
 FORBIDDEN_POLICY_TOKENS = re.compile(r"\b(?:delegate|agent|role|deep-reasoner|fast-worker|qa-runner|subagent)\b", re.I)
+SUITES = {"plumbing", "policy", "core", "ha", "smoke", "full"}
+TOKEN_KEYS = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens")
+BILLED_TOKEN_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -66,7 +69,7 @@ def _bad_paths(value: Any) -> bool:
 def validate_manifest(manifest: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     seen: set[str] = set()
-    if manifest.get("schema_version") != 3:
+    if manifest.get("schema_version") != 4:
         errors.append("unsupported schema_version")
     if set(manifest) - {"schema_version", "comparison", "cases"}:
         errors.append("unknown manifest field")
@@ -84,7 +87,7 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
         if ident in seen:
             errors.append(f"duplicate case: {ident}")
         seen.add(ident)
-        if case["kind"] not in {"plumbing", "policy"} or not isinstance(case["suites"], list) or not case["suites"] or any(suite not in {"plumbing", "policy", "smoke", "full"} for suite in case["suites"]):
+        if case["kind"] not in {"plumbing", "policy"} or not isinstance(case["suites"], list) or not case["suites"] or any(suite not in SUITES for suite in case["suites"]):
             errors.append(f"bad kind/suites: {ident}")
         if case["kind"] not in case["suites"] or "full" not in case["suites"]:
             errors.append(f"case must include kind and full suites: {ident}")
@@ -162,9 +165,14 @@ def _identity_status(expected: dict[str, Any], trace: dict[str, Any]) -> tuple[s
 
 def _routing_status(expected: dict[str, Any], trace: dict[str, Any]) -> tuple[str, str]:
     routing = expected.get("routing", {})
+    if trace.get("undeclared"):
+        return "FAIL", "undeclared role"
     roles = [item["role"] for item in trace["native_agents"]]
-    if any(role not in roles for role in routing.get("all_of", [])) or any(role in roles for role in routing.get("none_of", [])):
+    all_of = routing.get("all_of", [])
+    if any(role not in roles for role in all_of) or any(role in roles for role in routing.get("none_of", [])):
         return "FAIL", "routing evidence mismatch"
+    if all_of and any(role not in all_of for role in roles):
+        return "FAIL", "unexpected role"
     ordered = routing.get("ordered_roles", [])
     if ordered and roles[: len(ordered)] != ordered:
         return "FAIL", "routing order mismatch"
@@ -181,8 +189,6 @@ def grade(case: dict[str, Any], before: dict[str, str], after: dict[str, str], t
         return {**result, "hard_status": "INFRA_ERROR", "behavioral_status": "UNKNOWN", "status": "INFRA_ERROR", "reason": infra}
     if not trace.get("health", {}).get("ok", False):
         return {**result, "hard_status": "UNKNOWN", "behavioral_status": "UNKNOWN", "status": "UNKNOWN", "reason": "trace health gate: " + ",".join(trace.get("health", {}).get("missing", []))}
-    if trace.get("unknown"):
-        return {**result, "hard_status": "UNKNOWN", "behavioral_status": "UNKNOWN", "status": "UNKNOWN", "reason": "unknown trace schema"}
     identity_status, identity_reason = _identity_status(expected, trace)
     hard_checks = [_runtime_status(expected, trace, contract), (identity_status, identity_reason)]
     routing_status, routing_reason = _routing_status(expected, trace)
@@ -194,6 +200,11 @@ def grade(case: dict[str, Any], before: dict[str, str], after: dict[str, str], t
         if not any(_normalize_command(command.get("command")) == _normalize_command(wanted["command"]) and command.get("exit_code") == wanted["exit_code"] for command in trace.get("runner_checks", [])):
             hard_checks.append(("FAIL", "runner command evidence mismatch"))
     hard_status, hard_reason = next(((status, reason) for status, reason in hard_checks if status != "PASS"), ("PASS", "hard plumbing matched"))
+    anomalies = [item.get("reason") for item in trace.get("unknown") or [] if item.get("reason")]
+    if anomalies:
+        result["evidence_anomalies"] = anomalies
+        if hard_status == "PASS":
+            hard_status, hard_reason = "UNKNOWN", "evidence anomalies"
     behavioral_status, behavioral_reason = (routing_status, routing_reason) if case["kind"] == "policy" else ("NOT_APPLICABLE", "plumbing case")
     status = hard_status if hard_status != "PASS" else behavioral_status
     if status == "NOT_APPLICABLE":
@@ -273,6 +284,26 @@ def run_one(case: dict[str, Any], output: Path, dry: bool, model: str, effort: s
     finally:
         shutil.rmtree(work, ignore_errors=True)
         adapter.cleanup()
+
+
+def usage_totals(results: list[dict[str, Any]]) -> dict[str, Any]:
+    totals = {key: 0 for key in TOKEN_KEYS}
+    latency = 0.0
+    for row in results:
+        tokens = row.get("tokens") or {}
+        for key in TOKEN_KEYS:
+            value = tokens.get(key)
+            if isinstance(value, int):
+                totals[key] += value
+        latency += float(row.get("latency_seconds") or 0)
+    totals["latency_seconds"] = round(latency, 3)
+    totals["billed_tokens"] = sum(totals[key] for key in BILLED_TOKEN_KEYS)
+    return totals
+
+
+def _billed_tokens(tokens: dict[str, Any] | None) -> int:
+    usage = tokens or {}
+    return sum(usage[key] for key in BILLED_TOKEN_KEYS if isinstance(usage.get(key), int))
 
 
 def wilson(k: int, n: int) -> list[float]:
@@ -372,6 +403,22 @@ def compare(args: argparse.Namespace) -> int:
     return {"PASS": 0, "INCONCLUSIVE": 0, "REGRESSION": 1, "CONFOUNDED": 2}.get(report["status"], 3)
 
 
+def promotion_failures(summary: dict[str, Any]) -> list[str]:
+    failures = []
+    results = summary.get("results", [])
+    if summary.get("dry_run") or any(row.get("grade", {}).get("status") == "SKIP" for row in results):
+        failures.append("dry_run")
+    if summary.get("source_drift"):
+        failures.append("source_drift")
+    if any(row.get("grade", {}).get("hard_gate") and row.get("grade", {}).get("hard_status") != "PASS" for row in results):
+        failures.append("hard_failure")
+    if any(row.get("kind") == "policy" and row.get("grade", {}).get("behavioral_status") != "PASS" for row in results):
+        failures.append("incomplete_behavior")
+    if any("secret scan" in str(row.get("grade", {}).get("reason", "")) for row in results):
+        failures.append("secret_scan")
+    return failures
+
+
 def promote(args: argparse.Namespace) -> int:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", args.name):
         print(json.dumps({"status": "PROMOTION_REFUSED", "reasons": ["unsafe_name"]}))
@@ -381,13 +428,9 @@ def promote(args: argparse.Namespace) -> int:
         summary = load(source)
     except (OSError, json.JSONDecodeError) as exc:
         print(json.dumps({"status": "INPUT_INVALID", "error": str(exc)})); return 3
-    failures = []
-    if summary.get("dry_run") or any(r.get("grade", {}).get("status") == "SKIP" for r in summary.get("results", [])): failures.append("dry_run")
-    if summary.get("source_drift"): failures.append("source_drift")
-    if not verify_run(source.parent, summary): failures.append("evidence_root")
-    if any(r.get("grade", {}).get("hard_status") != "PASS" for r in summary.get("results", [])): failures.append("hard_failure")
-    if any(r.get("kind") == "policy" and r.get("grade", {}).get("behavioral_status") != "PASS" for r in summary.get("results", [])): failures.append("incomplete_behavior")
-    if any("secret scan" in str(r.get("grade", {}).get("reason", "")) for r in summary.get("results", [])): failures.append("secret_scan")
+    failures = promotion_failures(summary)
+    if not verify_run(source.parent, summary):
+        failures.append("evidence_root")
     if failures:
         print(json.dumps({"status": "PROMOTION_REFUSED", "reasons": failures}))
         return 2
@@ -443,11 +486,23 @@ def run(args: argparse.Namespace) -> int:
     if missing_roles:
         raise SystemExit(f"manifest references agents without declarations: {missing_roles}")
     results = []
+    billed = 0
+    budget = args.max_input_tokens or 0
+    stopped = False
+    budget_grade = {"hard_gate": False, "hard_status": "INFRA_ERROR", "behavioral_status": "UNKNOWN", "status": "INFRA_ERROR", "reason": "budget exceeded", "changed_paths": []}
     for repetition in range(args.repetitions):
         for case in cases:
             case_output = output / f"{repetition + 1:02d}-{case['id']}"
             case_output.mkdir()
-            results.append(run_one(case, case_output, args.dry_run, model, args.effort, args.timeout, snapshot, adapter, declared))
+            if stopped:
+                dump(case_output / "grade.json", {**budget_grade, "hard_gate": case["expected"].get("hard_gate", False)})
+                results.append(_result_row(case, {}, snapshot, time.monotonic(), {**budget_grade, "hard_gate": case["expected"].get("hard_gate", False)}, [], {}))
+                continue
+            result = run_one(case, case_output, args.dry_run, model, args.effort, args.timeout, snapshot, adapter, declared)
+            results.append(result)
+            billed += _billed_tokens(result.get("tokens"))
+            if budget and billed >= budget:
+                stopped = True
     hard_usable = [result for result in results if result["grade"]["hard_status"] not in {"INFRA_ERROR", "SKIP"}]
     behavior_usable = [result for result in results if result["kind"] == "policy" and result["grade"]["hard_status"] != "INFRA_ERROR" and result["grade"]["behavioral_status"] in {"PASS", "FAIL"}]
     metrics = {
@@ -456,6 +511,8 @@ def run(args: argparse.Namespace) -> int:
         "behavioral_routing_pass_rate": sum(result["grade"]["behavioral_status"] == "PASS" for result in behavior_usable) / len(behavior_usable) if behavior_usable else None,
         "behavioral_routing_samples": len(behavior_usable),
         "infrastructure_error_rate": sum(result["grade"]["hard_status"] == "INFRA_ERROR" for result in results) / len(results) if results else None,
+        "usage": usage_totals(results),
+        "budget_stopped": stopped,
     }
     drift = adapter.source_drift(REPO, snapshot)
     summary = {"generated_at": utc(), "runner_sha256": sha(Path(__file__)), "manifest_sha256": sha(ROOT / "manifest.json"), "repetitions": args.repetitions, "suite": args.suite, "adapter": adapter.name, "model": model, "cli_version": adapter.info["version"], "executable_sha256": adapter.info["sha256"], "toolchain_digest": adapter.info["toolchain_digest"], "network_env_digest": env_provenance(), "dry_run": args.dry_run, "config_digest": snapshot["hash"], "candidate_hashes": snapshot["hashes"], "metrics": metrics, "source_drift": drift, "results": results}
@@ -465,8 +522,9 @@ def run(args: argparse.Namespace) -> int:
     summary["evidence_root"] = root
     dump(output / "summary.json", summary)
     print(output)
-    failed = any(result["grade"]["hard_status"] not in {"PASS", "SKIP"} or result["grade"]["behavioral_status"] not in {"PASS", "SKIP", "NOT_APPLICABLE"} for result in results)
-    return int(drift or failed)
+    hard_failed = any(result["grade"]["hard_status"] not in {"PASS", "SKIP"} for result in results)
+    behavior_failed = any(result["grade"]["behavioral_status"] not in {"PASS", "SKIP", "NOT_APPLICABLE"} for result in results)
+    return int(drift or hard_failed or (behavior_failed and not args.observe))
 
 
 def main() -> int:
@@ -475,11 +533,13 @@ def main() -> int:
     subs.add_parser("preflight")
     runner = subs.add_parser("run")
     runner.add_argument("--adapter", choices=sorted(ADAPTERS), default="codex")
-    runner.add_argument("--suite", choices=["plumbing", "policy", "smoke", "full"], required=True)
+    runner.add_argument("--suite", choices=sorted(SUITES), required=True)
     runner.add_argument("--case")
     runner.add_argument("--repetitions", type=int, default=1)
     runner.add_argument("--timeout", type=int, default=300)
     runner.add_argument("--dry-run", action="store_true")
+    runner.add_argument("--observe", action="store_true", help="report behavioral FAIL without failing the process")
+    runner.add_argument("--max-input-tokens", type=int, default=0, help="stop remaining cases after billed tokens reach this cap; 0 is unlimited")
     runner.add_argument("--model", default=None, help="main model; defaults to the adapter's")
     runner.add_argument("--effort", default="medium")
     comparator = subs.add_parser("compare")
@@ -487,8 +547,8 @@ def main() -> int:
     comparator.add_argument("--candidate", required=True)
     comparator.add_argument("--min-effect", type=float, default=0.2)
     comparator.add_argument("--strict-inconclusive", action="store_true", help="return exit 1 when evidence is inconclusive")
-    comparator.add_argument("--output-json", default="evals/codex/.runs/compare.json")
-    comparator.add_argument("--output-report", default="evals/codex/.runs/compare.md")
+    comparator.add_argument("--output-json", default="evals/.runs/compare.json")
+    comparator.add_argument("--output-report", default="evals/.runs/compare.md")
     promoter = subs.add_parser("promote")
     promoter.add_argument("--run", required=True, help="explicit completed live run; never selects an old run automatically")
     promoter.add_argument("--name", required=True)

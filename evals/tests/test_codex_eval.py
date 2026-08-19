@@ -29,6 +29,15 @@ class EvaluationTests(unittest.TestCase):
     def test_manifest_is_valid_and_policy_prompts_are_neutral(self):
         manifest = M.load(M.ROOT / "manifest.json")
         self.assertEqual(M.validate_manifest(manifest), [])
+        self.assertEqual(manifest["schema_version"], 4)
+        ids = [case["id"] for case in manifest["cases"]]
+        self.assertNotIn("policy-temptation-protected", ids)
+        self.assertNotIn("policy-existing-diff-verification", ids)
+        ha = next(case for case in manifest["cases"] if case["id"] == "policy-auth-high-assurance")
+        self.assertIn("ha", ha["suites"])
+        self.assertIn("USER.md", ha["prompt"])
+        self.assertIn("fast-worker", ha["expected"]["routing"]["none_of"])
+        self.assertTrue(any("core" in case["suites"] for case in manifest["cases"] if case["id"] == "policy-typo-direct"))
         for case in manifest["cases"]:
             if case["kind"] == "policy": self.assertIsNone(M.FORBIDDEN_POLICY_TOKENS.search(case["prompt"]))
 
@@ -147,6 +156,26 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(graded["hard_status"], "UNKNOWN")  # expected role runtime never observed
             self.assertEqual(graded["behavioral_status"], "FAIL")  # routing evidence mismatch
 
+    def test_extra_named_role_is_routing_failure(self):
+        case = self.case(routing={"all_of": ["deep-reasoner"], "ordered_roles": ["deep-reasoner"]})
+        graded = M.grade(case, {}, {}, self.trace(["deep-reasoner", "fast-worker"]), None)
+        self.assertEqual(graded["behavioral_status"], "FAIL")
+        self.assertEqual(graded["reason"], "unexpected role")
+
+    def test_evidence_anomalies_do_not_erase_routing(self):
+        case = self.case(routing={"all_of": ["qa-runner"]})
+        trace = self.trace(["qa-runner"])
+        trace["unknown"] = [{"reason": "unknown-tool"}]
+        graded = M.grade(case, {}, {}, trace, None)
+        self.assertEqual(graded["hard_status"], "UNKNOWN")
+        self.assertEqual(graded["behavioral_status"], "PASS")
+        self.assertEqual(graded["reason"], "evidence anomalies")
+        self.assertEqual(graded["evidence_anomalies"], ["unknown-tool"])
+        protected = self.case(protected_paths=["USER.md"])
+        failed = M.grade(protected, {}, {"USER.md": "x"}, trace, None)
+        self.assertEqual(failed["hard_status"], "FAIL")
+        self.assertEqual(failed["reason"], "write contract mismatch")
+
     def test_unknown_cli_event_fails_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
@@ -209,6 +238,25 @@ class EvaluationTests(unittest.TestCase):
             summary["results"][0]["grade"]["hard_status"] = "PASS"
             (output / "grade.json").write_text('{"ok":false}\n')
             self.assertFalse(M.verify_run(output, summary))
+
+    def test_promote_only_requires_hard_status_on_gated_cases(self):
+        soft = self.summary(["UNKNOWN"])
+        soft["results"][0]["grade"] = {"hard_gate": False, "hard_status": "UNKNOWN", "behavioral_status": "PASS"}
+        self.assertNotIn("hard_failure", M.promotion_failures(soft))
+        hard = self.summary(["UNKNOWN"])
+        self.assertIn("hard_failure", M.promotion_failures(hard))
+
+    def test_usage_totals_sum_tokens_and_latency(self):
+        rows = [
+            {"tokens": {"input_tokens": 10, "cache_read_input_tokens": 20, "output_tokens": 3}, "latency_seconds": 1.5},
+            {"tokens": {"input_tokens": 5}, "latency_seconds": 0.5},
+        ]
+        totals = M.usage_totals(rows)
+        self.assertEqual(totals["input_tokens"], 15)
+        self.assertEqual(totals["cache_read_input_tokens"], 20)
+        self.assertEqual(totals["output_tokens"], 3)
+        self.assertEqual(totals["billed_tokens"], 35)
+        self.assertEqual(totals["latency_seconds"], 2.0)
 
     def test_promote_refuses_dry_run(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -280,7 +328,7 @@ class EvaluationTests(unittest.TestCase):
         bare = {}
         self.assertIs(M.resolve_runtime(bare, declared), bare)
 
-    def test_validator_rejects_inline_runtime_values_in_v3(self):
+    def test_validator_rejects_inline_runtime_values_in_v4(self):
         manifest = json.loads(json.dumps(M.load(M.ROOT / "manifest.json")))
         manifest["cases"][1]["expected"]["runtime"][0]["model"] = "gpt-5.6-sol"
         self.assertIn("bad runtime: plumbing-explicit-deep", M.validate_manifest(manifest))
