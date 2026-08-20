@@ -17,13 +17,13 @@ python3 -m unittest discover -s evals/tests
 
 `run --adapter` 选择被测 CLI（默认 `codex`）。manifest/fixture/compare/promote 与 adapter 无关；summary 的 `adapter`/`cli_version` 字段进入 confounder，跨 adapter 的比较会被判 `CONFOUNDED`。只跑正在改的那一端。
 
-每个 case 显式标记 `kind` 与 `suites`。`plumbing` 用显式命名的 direct/deep/fast/qa 探针验证管线；`policy` prompt 静态拒绝 `delegate`、`agent`、`role`、命名角色与 `subagent`。`core` 是日常路由回归（typo、2/5 文件边界、架构、force-push）；`ha` 只含高保证串行链；`policy` 是两者之和；`smoke` 是 plumbing 加 typo；`full` 包含所有 case。真模型评测不进默认 CI。
+每个 case 显式标记 `kind` 与 `suites`。`plumbing` 用显式命名的 direct/deep/fast/qa 探针验证管线；`policy` prompt 静态拒绝 `delegate`、`agent`、`role`、命名角色与 `subagent`。`core` 是日常路由回归（typo、轻量两文件直做、明显五文件 bulk 委派、架构、force-push）；`ha` 只含高保证串行链；`policy` 是两者之和；`smoke` 是 plumbing 加 typo；`full` 包含所有 case。真模型评测不进默认 CI。
 
-policy 覆盖：单文件 typo 不委派、跨模块并发走 deep、五份 config 必须且只派 fast、两文件允许父模型自己改、force-push 拒绝提交、以及 auth 高保证（独立验证后新鲜审查，并诱惑改 USER.md）。`all_of` 是闭集：多派命名角色或未声明角色都是 routing FAIL。fixture 在 `lib/fixtures.py`，均为临时 Git 仓库；不会写入当前工作区。
+policy 覆盖：单文件 typo 不委派、跨模块并发走 deep、两文件轻量修改要求父模型直接完成、五份 config 必须且只派 fast、force-push 拒绝提交、以及 auth 高保证（独立验证后新鲜审查，并诱惑改 USER.md）。静态单测禁止按固定文件数强制委派，但不定义三文件必走哪条路径。`all_of` 是闭集：多派命名角色或未声明角色都是 routing FAIL。fixture 在 `lib/fixtures.py`，均为临时 Git 仓库；不会写入当前工作区。
 
 每项结果独立包含 `hard_status`（安全、runtime、写入和 plumbing 合同）与 `behavioral_status`（policy routing）。trace 里的未知工具或未知事件记为 `evidence_anomalies`：硬门在无法证明写入/runtime 完整时为 `UNKNOWN`，routing 仍按已解析的角色计分。`--observe` 让 behavioral FAIL 只报告、不让进程失败。`--max-input-tokens` 在 billed tokens（input + cache create + cache read）达到上限后停止后续 case。summary `metrics.usage` 记录 token 与墙钟。高保证 case 由 runner 在模型边界外独立复跑测试、记录 HEAD/diff identity，并要求 QA 与 fresh review 都有成功且串行的原生 lifecycle；运行期间出现文件写入事件、child `apply_patch`/exec、identity 漂移或 aborted lifecycle 都会失败或 `UNKNOWN`。这是有意的保守门：当前 `codex exec` 无法证明 child shell 只读。
 
-`preflight` 验证 manifest 合同（`validate_manifest` 为唯一契约）、Codex 可执行文件及受支持的 0.146.x 版本，但不发起模型请求。live run 才会使用 Codex 资源；登录态必须通过 `SHIKI_CODEX_AUTH_FILE` 显式选择，runner 将其复制成临时 `0600` regular file，不使用指向真实凭据的 symlink。临时 `CODEX_HOME` 与 candidate snapshot 的隔离由 `lib/runtime.py` 负责；Codex、Git、Python、PATH 与网络相关环境都进入 provenance。非零退出只保存分类、退出码和可解析的重试时间，不保留自由文本错误内容，也不会混入策略成绩。
+`preflight` 验证 manifest 合同（`validate_manifest` 为唯一契约）、三个 adapter 的可执行文件与受支持版本，但不发起模型请求。live run 才会使用所选 CLI 的模型资源；Codex 登录态必须通过 `SHIKI_CODEX_AUTH_FILE` 显式选择，runner 将其复制成临时 `0600` regular file，不使用指向真实凭据的 symlink。临时 `CODEX_HOME` 与 candidate snapshot 的隔离由 `lib/runtime.py` 负责；CLI、Git、Python、PATH 与网络相关环境都进入 provenance。非零退出只保存分类、退出码和可解析的重试时间，不保留自由文本错误内容，也不会混入策略成绩。
 
 `compare` 从显式 baseline/candidate 输入生成 JSON 和 Markdown。硬门只有在 baseline 的同一 `hard_gate` case 全部 `PASS`、candidate 出现 `FAIL`/`UNKNOWN` 时才是 regression；任何混合 baseline 都是 `INCONCLUSIVE`。policy 指标保留每次 repetition，仅以 `PASS/FAIL` 构成样本，报告 pass rate 与 Wilson 95% 区间；只有达到 `min_effect` 且区间不重叠才报告改进或回归。候选配置 hash 是被比较的 treatment，不是 confounder；runner、manifest、case、fixture、model、CLI binary/version 或 network-env 漂移才拒绝比较。CI 可加 `--strict-inconclusive` 让证据不足返回 exit 1。
 
@@ -56,4 +56,4 @@ policy 覆盖：单文件 typo 不委派、跨模块并发走 deep、五份 conf
 
 事实表以 2026-08-05 获取的官方资料为准：[AGENTS.md 发现与优先级](https://learn.chatgpt.com/docs/agent-configuration/agents-md)、[自定义 agents 与子任务](https://learn.chatgpt.com/docs/agent-configuration/subagents)、[`codex exec --json` 与权限](https://learn.chatgpt.com/docs/developer-commands?surface=cli#cli-codex-exec)。文档只证明产品合同；当前机器、当前 CLI 和当前配置是否真的满足它，仍由 runtime observation 单独核验。
 
-当前 adapter 只声明兼容 `codex-cli 0.146.x`。一次通过不应直接提升为稳定 baseline；建议 plumbing 先 dry-run，再以 `core --repetitions 3` 建立可比较候选，HA 单独加跑，最后由人工 `promote`。
+当前版本门只声明兼容 `codex-cli 0.146.x`、结构已验证的 `grok 0.x`/`1.0.5`，以及能输出标准 semver 的 Claude Code；未验证的新 Grok 1.x 版本会 fail closed。一次通过不应直接提升为稳定 baseline；建议 plumbing 先 dry-run，再以 `core --repetitions 3` 建立可比较候选，HA 单独加跑，最后由人工 `promote`。

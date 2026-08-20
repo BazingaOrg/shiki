@@ -1,6 +1,6 @@
 """Grok Build CLI adapter.
 
-Evidence model (probe-verified on grok 0.2.118):
+Evidence model (probe-verified on grok 0.2.118 and structurally verified on 1.0.5):
 - `grok --single ... --output-format streaming-json` emits an ACP NDJSON
   stream: tool_call / usage / end events; `end` carries the session id.
 - Every session (parent and spawned subagents) is stored under
@@ -49,7 +49,7 @@ def _epoch_to_iso(ts: Any) -> str | None:
 class GrokAdapter(EvalAdapter):
     name = "grok"
     binary = "grok"
-    VERSION = re.compile(r"\b0\.\d+\.\d+\b")
+    VERSION = re.compile(r"\b(?:0\.\d+\.\d+|1\.0\.5)\b")
     default_model = "grok-4.5"
     prompt_via = "argv"
 

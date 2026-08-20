@@ -37,6 +37,11 @@ class EvaluationTests(unittest.TestCase):
         self.assertIn("ha", ha["suites"])
         self.assertIn("USER.md", ha["prompt"])
         self.assertIn("fast-worker", ha["expected"]["routing"]["none_of"])
+        boundary = next(case for case in manifest["cases"] if case["id"] == "policy-boundary-bulk-light")
+        self.assertEqual(set(boundary["expected"]["routing"]["none_of"]), {"deep-reasoner", "fast-worker", "qa-runner"})
+        bulk = next(case for case in manifest["cases"] if case["id"] == "policy-bulk-config")
+        self.assertEqual(bulk["expected"]["routing"]["all_of"], ["fast-worker"])
+        self.assertEqual(bulk["expected"]["routing"]["none_of"], ["deep-reasoner", "qa-runner"])
         self.assertTrue(any("core" in case["suites"] for case in manifest["cases"] if case["id"] == "policy-typo-direct"))
         for case in manifest["cases"]:
             if case["kind"] == "policy": self.assertIsNone(M.FORBIDDEN_POLICY_TOKENS.search(case["prompt"]))
@@ -297,16 +302,42 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(diagnostic["category"], "rate_limit")
         self.assertNotIn("excerpt", diagnostic)
 
-    def test_rule_files_stay_in_sync_between_claude_and_codex(self):
-        claude = (M.REPO / "CLAUDE.md").read_text()
-        codex_agents = (M.REPO / "codex" / "AGENTS.md").read_text()
-        synonyms = (r"\bDispatch\b", "Spawn"), ("dispatch a configured role", "spawn a named custom agent")
-        normalized_claude = claude
-        normalized_codex = codex_agents
-        for pattern, replacement in synonyms:
-            normalized_claude = re.sub(pattern, replacement, normalized_claude)
-            normalized_codex = re.sub(pattern, replacement, normalized_codex)
-        self.assertEqual(normalized_claude, normalized_codex, "CLAUDE.md and codex/AGENTS.md drifted; re-sync both files")
+    def test_rule_files_stay_in_sync_across_platforms(self):
+        rule_files = {
+            "claude": (M.REPO / "CLAUDE.md").read_text(),
+            "codex": (M.REPO / "codex" / "AGENTS.md").read_text(),
+            "grok": (M.REPO / "grok" / "AGENTS.md").read_text(),
+        }
+        native_main_sentences = {
+            "claude": "delegate to a configured subagent",
+            "codex": "spawn a named custom agent",
+            "grok": "use `spawn_subagent` with the matching `subagent_type`",
+        }
+        for platform, sentence in native_main_sentences.items():
+            self.assertIn(sentence, rule_files[platform])
+        self.assertEqual(rule_files["claude"].count("- Delegate to `"), 3)
+        self.assertEqual(rule_files["codex"].count("- Spawn `"), 3)
+        self.assertEqual(rule_files["grok"].count("- Spawn `"), 3)
+        normalized = {}
+        for platform, rules in rule_files.items():
+            rules = rules.replace(native_main_sentences[platform], "delegate to a configured subagent")
+            normalized[platform] = re.sub(r"(?m)^- (?:Delegate to|Spawn) `", "- Route to `", rules)
+        self.assertEqual(normalized["claude"], normalized["codex"], "CLAUDE.md and codex/AGENTS.md drifted; re-sync both files")
+        self.assertEqual(normalized["claude"], normalized["grok"], "CLAUDE.md and grok/AGENTS.md drifted; re-sync both files")
+
+    def test_rule_files_do_not_force_delegation_by_fixed_file_count(self):
+        fixed_count_routing = re.compile(
+            r"(?im)^(?=[^\n]*\bfiles?\b)(?=[^\n]*(?:\b\d+\+(?=\s|$)|\bat least\s+\d+\b|\b\d+\s+or more\b))(?=[^\n]*(?:\bdelegate\b|\bdelegation\b|\bspawn\b|\bdispatch\b|\bfast-worker\b)).*$"
+        )
+        self.assertRegex(
+            "Bulk same-pattern edits across 3+ files are never done inline: always delegate to fast-worker.",
+            fixed_count_routing,
+        )
+        for path in (M.REPO / "CLAUDE.md", M.REPO / "codex" / "AGENTS.md", M.REPO / "grok" / "AGENTS.md"):
+            rules = path.read_text()
+            self.assertIn("action/impact, not file count", rules)
+            self.assertIn("handle small edits directly when delegation offers no clear benefit", rules)
+            self.assertIsNone(fixed_count_routing.search(rules), f"{path.relative_to(M.REPO)} forces delegation by file count")
 
     def test_declared_runtime_reads_toml_and_rejects_missing_fields(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -348,6 +379,12 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(checks[0]["exit_code"], 1)
 
     # -- Grok adapter ----------------------------------------------------
+
+    def test_grok_version_gate_accepts_verified_builds_only(self):
+        self.assertIsNotNone(GrokAdapter.VERSION.search("grok 0.2.118"))
+        self.assertIsNotNone(GrokAdapter.VERSION.search("grok 1.0.5 (5115b46bc909)"))
+        self.assertIsNone(GrokAdapter.VERSION.search("grok 1.0.6"))
+        self.assertIsNone(GrokAdapter.VERSION.search("grok 2.0.0"))
 
     def test_grok_declared_runtime_reads_frontmatter(self):
         with tempfile.TemporaryDirectory() as directory:

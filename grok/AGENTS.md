@@ -2,21 +2,17 @@
 
 ## Default execution
 
-- The main model owns the outcome end to end. Do ordinary work directly; use `spawn_subagent` with the matching `subagent_type` only when bounded delegation clearly improves quality, speed, independence, or context. The parent orchestrates.
+- The main model owns orchestration, synthesis, and the outcome end to end. Do ordinary work directly; use `spawn_subagent` with the matching `subagent_type` only when bounded delegation clearly improves quality, speed, independence, or context.
 - Inspect relevant context and existing changes before writing. Read-only access never authorizes a write; make the smallest style-consistent change.
-- Use a short plan only for complex, ambiguous, or multi-stage work. A plan does not pause execution; ask only for a material design/scope choice, new authority, or an unsafe blocker.
+- Use a short plan for complex, ambiguous, or multi-stage work; create a persistent plan or ADR only when the project, user, or a real cross-stage decision requires one. Planning does not pause execution; ask only for a material design/scope choice, new authority, or an unsafe blocker.
 - An explicit `commit`, `push`, `open PR`, `deploy`, or `proceed` command authorizes that exact action without redundant confirmation. It does not authorize other files, consequences, PRs, or deploys.
 
 ## Selective delegation
 
-- Spawn `deep-reasoner` only for significant root causes, architecture, or difficult tradeoffs.
-- Spawn `fast-worker` only for bounded, separable, repetitive, or bulk implementation with clear ownership.
-- Bulk same-pattern edits across 3+ files are never done inline: always delegate to `fast-worker` with an explicit file list and scope.
+- Spawn `deep-reasoner` only for significant root causes, including concurrency or cross-module failures, architecture, difficult tradeoffs, or a fresh read-only review.
+- Spawn `fast-worker` only for bounded, separable mechanical, repetitive, or bulk implementation with explicit ownership; handle small edits directly when delegation offers no clear benefit.
 - Spawn `qa-runner` only for material independent tests, typecheck, lint, or coverage. QA reports results and never fixes them.
-- Keep dependent work serial. Parallelize only genuinely independent owned scopes.
-- Dependent work is serial: wait for the previous agent to complete before starting the next.
-- A verification-then-review chain is dependent work: the fresh review starts only after verification completes and reports, assessing the same unchanged diff.
-- Routing hints: concurrency deadlocks, cross-module root causes, and design tradeoff comparisons are deep-reasoner tasks — route them there and synthesize the conclusion instead of analyzing directly. Mechanical same-pattern edits across 3+ files are fast-worker tasks with an explicit scope; single-file typo or format fixes are done directly. Independent verification of an existing diff (run its tests, report PASS/FAIL) is a qa-runner task; a fresh read-only review of that same unchanged diff is a deep-reasoner task.
+- Parallelize only independent owned scopes. Keep dependent work serial; in a verification-then-review chain, verification must finish before fresh review of the same unchanged diff.
 
 ## Git and safety
 
@@ -30,11 +26,9 @@
 ## High assurance
 
 - Upgrade by action/impact, not file count: production or release; auth/authz; privacy, keys, or security; payment, migration, irreversible deletion; global config, CI, toolchain; multiple writers; or explicit high-assurance request.
-- State success, scope, allowed paths, and base/dirty context; protect user work and isolate when needed.
-- Separate implementation from independent QA; add a fresh read-only review for security, irreversible, or explicitly high-assurance work.
-- QA/review must assess the same unchanged scoped diff and base; any change invalidates their result. Report commands, exits, and findings.
-- During a frozen review, never invoke a write-capable tool, even to inspect or to revert an attempt.
-- Stop on scope/base drift, unexpected writes, failure, unknown identity, or missing authority. External irreversible actions retain an exact human gate.
+- Before work, state success criteria, scope, allowed paths, and base/dirty context; protect user work and isolate when needed.
+- Separate implementation from independent QA; add a fresh read-only review for security, irreversible, or explicitly high-assurance work. QA and review assess the same unchanged scoped diff and base; any change invalidates their results. Report commands, exits, and findings.
+- During a frozen review, never invoke a write-capable tool, even to inspect or revert an attempt. Stop on scope/base drift, unexpected writes, failure, unknown identity, or missing authority; external irreversible actions retain an exact human gate.
 - This is process discipline, not an OS sandbox, network/credential boundary, or ACL.
 
 ## Execution quality
@@ -42,6 +36,4 @@
 - State material assumptions, choose the simplest sufficient change, and follow project style.
 - Do not add code comments. Keep code self-explanatory through clear naming and structure.
 - When updating current-state documentation for a new design, replace superseded design descriptions in place. Do not retain legacy designs, migration narratives, or old-versus-new comparisons unless explicitly requested.
-- Create plans or ADRs only when the project, user, or a real cross-stage decision requires them.
-- Self-review, run relevant checks, and report performed checks, risks, and verification left to the user.
-- After each implementation round, self-review the round's diff and fix issues found, re-running affected checks; a fix invalidates prior review results, so independent QA and fresh reviews assess the final unchanged scoped diff.
+- After each implementation round, self-review the diff, fix findings, rerun affected checks, and report performed checks, risks, and remaining verification. Any fix invalidates prior QA or review.
