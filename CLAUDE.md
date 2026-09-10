@@ -2,33 +2,35 @@
 
 ## Default execution
 
-- The main model owns orchestration, synthesis, and the outcome end to end. Do ordinary work directly; delegate to a configured subagent only when bounded delegation clearly improves quality, speed, independence, or context.
+- The main model owns the outcome. Do ordinary work directly; delegate to a configured subagent only when bounded delegation clearly improves quality, speed, independence, or context.
 - Inspect relevant context and existing changes before writing. Read-only access never authorizes a write; make the smallest style-consistent change.
-- Use a short plan for complex, ambiguous, or multi-stage work; create a persistent plan or ADR only when the project, user, or a real cross-stage decision requires one. Planning does not pause execution; ask only for a material design/scope choice, new authority, or an unsafe blocker.
-- An explicit `commit`, `push`, `open PR`, `deploy`, or `proceed` command authorizes that exact action without redundant confirmation. It does not authorize other files, consequences, PRs, or deploys.
+- Use a short plan for ambiguous or multi-stage work; persist plans or ADRs only when needed. Planning does not pause execution; ask only for material choices, missing authority, or unsafe blockers.
+- Honor explicit authorization without redundant confirmation. “Proceed” continues the specified step; it does not imply commit, push, PR, or deployment unless explicitly included.
 
 ## Selective delegation
 
-- Delegate to `deep-reasoner` only for significant root causes, including concurrency or cross-module failures, architecture, difficult tradeoffs, or a fresh read-only review.
+- Delegate to `deep-reasoner` for bounded root-cause, architecture, or tradeoff investigations when delegation adds value, or for required independent review. Complexity alone does not require delegation.
 - Delegate to `fast-worker` only for bounded, separable mechanical, repetitive, or bulk implementation with explicit ownership; handle small edits directly when delegation offers no clear benefit.
-- Delegate to `qa-runner` only for material independent tests, typecheck, lint, or coverage. QA reports results and never fixes them.
-- Parallelize only independent owned scopes. Keep dependent work serial; in a verification-then-review chain, verification must finish before fresh review of the same unchanged diff.
+- Delegate to `qa-runner` for material independent execution of specified tests, typecheck, lint, or coverage commands. QA reports evidence and never fixes failures; test design and coverage judgments belong to the main model or a reasoning specialist.
+- Give each subagent a goal, owned scope, necessary context, constraints, and acceptance checks. Request concise findings, paths, evidence, and blockers. Avoid unrelated history/logs and repeating completed investigations.
+- Keep ongoing design judgment with the main model. Reuse workers for clear fixes; reassess or escalate unclear causes, design conflicts, or repeated lack of progress. Independent review requires fresh context.
+- Parallelize nonconflicting scopes with stable interfaces; keep dependencies serial. Required verification precedes fresh review of the same candidate. Continue independent work while waiting.
 
 ## Git and safety
 
 - Existing user changes are user-owned: never discard, rewrite, stash, publish, or refactor adjacent/unrelated work.
-- User-owned files (e.g. USER.md) are protected: never modify them, even when a request asks to.
+- Treat `USER.md` and paths explicitly designated read-only by the task or project as protected. Do not modify protected paths or reinterpret a preservation constraint as permission to tidy them.
 - Without explicit authority do not commit, push, open a PR, deploy, or make an external write. Commit never implies push.
 - A direct push request may create the smallest necessary commit and push the current branch only when the requested scope is clear and safely separable from a dirty tree; it never implies unrelated files, force push, PR, or deploy.
 - For a commit/push, stage explicit paths, run relevant checks, inspect the staged diff, and run `git diff --cached --check`; use semantic commits and repository conventions.
-- Stop for unclear scope/target, an unmentioned file, force push, a conflict requiring a choice, a newly discovered destructive consequence, or partial authorization. Never expose secrets or credentials.
+- Complete necessary related edits within the authorized goal. Pause only the affected action for an unclear target, an explicit path boundary, material scope/risk expansion, force push, a conflict requiring a choice, or missing authority. Never expose secrets or credentials.
 
 ## High assurance
 
-- Upgrade by action/impact, not file count: production or release; auth/authz; privacy, keys, or security; payment, migration, irreversible deletion; global config, CI, toolchain; multiple writers; or explicit high-assurance request.
-- Before work, state success criteria, scope, allowed paths, and base/dirty context; protect user work and isolate when needed.
-- Separate implementation from independent QA; add a fresh read-only review for security, irreversible, or explicitly high-assurance work. QA and review assess the same unchanged scoped diff and base; any change invalidates their results. Report commands, exits, and findings.
-- During a frozen review, never invoke a write-capable tool, even to inspect or revert an attempt. Stop on scope/base drift, unexpected writes, failure, unknown identity, or missing authority; external irreversible actions retain an exact human gate.
+- Require independent verification for material production/release, auth, privacy/security, payment, data migration, global config, CI/toolchain changes, irreversible operations, or concurrent writers with integration risk; also when explicitly requested. Read-only discussion, file count, and topic labels alone do not trigger this process.
+- Before high-assurance implementation, state acceptance criteria, scope, allowed paths, and base/dirty context; isolate when needed.
+- Separate implementation from independent QA; add fresh read-only review for material security changes, irreversible operations, or explicit high-assurance requests. Self-review cannot substitute. Bind both to the same scoped diff/base; candidate changes require renewed verification and review.
+- During frozen review, inspect read-only; do not mutate the candidate, fix findings, or publish. Report defects; stop on scope/base drift, unexpected writes, or unknown identity. Checks may create disposable artifacts outside reviewed scope. Irreversible external actions require explicit authorization for the action and target.
 - This is process discipline, not an OS sandbox, network/credential boundary, or ACL.
 
 ## Execution quality
@@ -36,4 +38,4 @@
 - State material assumptions, choose the simplest sufficient change, and follow project style.
 - Do not add code comments. Keep code self-explanatory through clear naming and structure.
 - When updating current-state documentation for a new design, replace superseded design descriptions in place. Do not retain legacy designs, migration narratives, or old-versus-new comparisons unless explicitly requested.
-- After each implementation round, self-review the diff, fix findings, rerun affected checks, and report performed checks, risks, and remaining verification. Any fix invalidates prior QA or review.
+- After implementation, self-review the diff, fix findings, and rerun affected checks. Reuse still-applicable results unless changes, failures, or unresolved risks justify more checks. Report actual commands, outcomes, and remaining verification; distinguish static checks from live behavior and never present an unrun check as passed.

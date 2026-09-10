@@ -1,269 +1,75 @@
-# Grok Build 多模型编排实践指南
+# Grok Build 编排实践指南
 
-用 AGENTS.md + 自定义 agent 定义在 Grok Build 上搭建「主模型编排、按任务路由专职 agent」的工作流：重推理给 `deep-reasoner`，机械执行给 `fast-worker`，验证给 `qa-runner`，主模型只做规划、拆解和综合。
+主模型默认直接完成普通工作；需要时通过 `spawn_subagent` 的 `subagent_type` 选择专职角色。没有固定的分析、实施、验证流水线。共享职责与权限要求见 [grok/AGENTS.md](./grok/AGENTS.md)。
 
-本指南是 [Claude Code / Codex 编排模板](./README.md) 的 Grok Build 移植版。三者共享同一套工程原则和角色设计；差异在配置载体、模型映射和官方路径。
+## 当前配置
 
-字段与发现路径以本机 Grok 用户指南为准（`~/.grok/docs/user-guide/`，尤其是 `12-project-rules.md` 与 `16-subagents.md`）。
+| 角色 | 模型 | effort | permission_mode | role capability 默认 |
+| --- | --- | --- | --- | --- |
+| deep-reasoner | grok-4.6 | high | plan | read-only |
+| fast-worker | grok-4.6 | medium | default | all |
+| qa-runner | grok-4.6 | low | default | execute |
 
-## 目录
+Grok 4.6 是当前编程与通用任务主力。先运行 `grok models` 核对账户实际可用型号；不要从其他厂商的型号或 API 列表推导 Build 可用模型。本机 2026-09-09 返回 4.6 和 4.5，默认 4.6。
 
-- [与 Claude Code / Codex 的对应关系](#与-claude-code--codex-的对应关系)
-- [架构](#架构)
-- [安装](#安装)
-- [双 lane](#双-lane)
-- [Agent 定义](#agent-定义)
-- [Reasoning effort 分层](#reasoning-effort-分层)
-- [避免 Claude 规则双份注入](#避免-claude-规则双份注入)
-- [AGENTS.md 与全局规则](#agentsmd-与全局规则)
-- [验证委派真的发生了](#验证委派真的发生了)
-- [注意事项](#注意事项)
-
-## 与 Claude Code / Codex 的对应关系
-
-| | Claude Code | Codex | Grok Build |
-|---|---|---|---|
-| 指令文件 | `CLAUDE.md` | `AGENTS.md` | `AGENTS.md`（也认 `CLAUDE.md`） |
-| agent 定义 | `~/.claude/agents/*.md` | `~/.codex/agents/*.toml` | `~/.grok/agents/*.md` |
-| 项目级 agent | `<项目>/.claude/agents/` | `<项目>/.codex/agents/` | `<项目>/.grok/agents/` |
-| 用户级全局规则 | `~/.claude/` 等 | 逐级 `AGENTS.md` | **`~/.grok/rules/*.md`** |
-| deep-reasoner | Opus | `gpt-5.6-sol` | `grok-4.5` + effort **high** + `plan` |
-| fast-worker | Sonnet | `gpt-5.6-terra` | `grok-4.5` + effort **medium** |
-| qa-runner | Haiku | `gpt-5.6-luna` | `grok-4.5` + effort **low** |
-| 检查运行中的委派 | Task 调用 + 日志 | `/agent` | 任务窗 `Ctrl+G`、`/config-agents`、`grok inspect` |
-| 子 agent 调用 | Task / 委派 | spawn custom agent | `spawn_subagent` + `subagent_type` |
-
-模型名称以本地 `grok models` 为准；不可用时改 frontmatter 中的 `model`。
-
-## 架构
-
-```
-你 (Goal + Context)
-        │
-        ▼
-   主模型 (orchestrator)  规划 · 拆解 · 综合
-        │
-        ├──► deep-reasoner (grok-4.5, high, plan)     重推理
-        ├──► fast-worker  (grok-4.5, medium, default) 机械执行
-        └──► qa-runner    (grok-4.5, low, default)    验证报告
-                  │
-                  └── 失败报告回流主模型 → 重新派 fast-worker 修复
-```
-
-官方约束：子 agent **不能再 spawn**（深度为 1）。编排必须留在主会话。
+同一模型通过 effort 区分推理深度。QA 只执行指定检查并报告命令、退出码和失败证据；不设计测试、不修源码。失败由主模型判断：明确问题回实施方，根因不明或重复无进展则调整策略。
 
 ## 安装
 
-假设已 clone 本仓库并位于仓库根目录。
-
-**1. 备份现有配置（建议先做）：**
+在仓库根目录执行；已有文件先比较合并，不覆盖用户配置：
 
 ```bash
-mkdir -p ~/grok-config-backup
-cp -R ~/.grok/agents ~/grok-config-backup/agents 2>/dev/null
-cp -R ~/.grok/roles ~/grok-config-backup/roles 2>/dev/null
-cp -R ~/.grok/rules ~/grok-config-backup/rules 2>/dev/null
-cp ~/.grok/config.toml ~/grok-config-backup/ 2>/dev/null
-```
-
-**2. 安装三个用户级 agent + 同名 roles：**
-
-```bash
-mkdir -p ~/.grok/agents ~/.grok/roles
+mkdir -p ~/.grok/agents ~/.grok/roles ~/.grok/rules
 cp -i grok/agents/deep-reasoner.md ~/.grok/agents/deep-reasoner.md
 cp -i grok/agents/fast-worker.md ~/.grok/agents/fast-worker.md
 cp -i grok/agents/qa-runner.md ~/.grok/agents/qa-runner.md
 cp -i grok/roles/deep-reasoner.toml ~/.grok/roles/deep-reasoner.toml
 cp -i grok/roles/fast-worker.toml ~/.grok/roles/fast-worker.toml
 cp -i grok/roles/qa-runner.toml ~/.grok/roles/qa-runner.toml
+cp -i grok/AGENTS.md ~/.grok/rules/AGENTS.md
 ```
 
-**3. 放置编排规则（用户级为主）：**
+全局规则放 `~/.grok/rules/`。项目规则只放该项目的命令和例外；项目角色可放 `.grok/agents/` 和 `.grok/roles/`。安装后开启新会话，确认加载与实际模型。
 
-- **项目级（推荐写入仓库）：**
+## 角色和配置优先级
 
-  ```bash
-  cp grok/AGENTS.md /path/to/your-project/AGENTS.md
-  ```
+完整 agent 文件见 [grok/agents](./grok/agents/)，同名 role 见 [grok/roles](./grok/roles/)。Markdown frontmatter 指定 model、effort、permission_mode；role TOML 指定 reasoning_effort 和 default_capability_mode。两处 effort 保持一致。
 
-  已有 `AGENTS.md` 时手动合并 Orchestration 等章节，不要直接覆盖项目特有规则。
+安装版本自带 `16-subagents.md` 给出的 model/effort 优先级是：spawn 显式覆盖、role 默认、persona 默认、父会话。还可通过 `[subagents.models]` 指定 per-type 模型。role 文件可被 inline `[subagents.roles.*]` 配置覆盖；不能仅凭文件内容断言最终 runtime。
 
-- **用户级全局规则（对所有项目生效）：**
+`permission_mode`、`capability_mode` 与实际文件系统/网络沙箱不是同一个概念。`execute` 允许执行命令，不能据此证明 shell 不会写文件。只读审查不得修改候选；QA 产物应留在允许的临时范围。实际权限及覆盖效果需结合运行时证据核验。
 
-  按官方 Project Rules 文档，用户级规则目录是 `~/.grok/rules/`（不是 `~/.grok/AGENTS.md`）：
+主模型只并行处理接口稳定、范围不冲突的任务。独立验证后审查必须保持顺序和候选身份；普通调查与实施可以由主模型直接完成。
 
-  ```bash
-  mkdir -p ~/.grok/rules
-  cp -i grok/AGENTS.md ~/.grok/rules/AGENTS.md
-  ```
+## 避免重复规则
 
-  全局规则会先加载；项目内更深层的 `AGENTS.md` 优先级更高。
-
-**4. 关闭 Claude 全局 agents 兼容（推荐，避免双份编排）：**
-
-将 [`grok/config.snippet.toml`](./grok/config.snippet.toml) 合并进 `~/.grok/config.toml`：
+若同时安装 Claude 和 Grok 全局规则，可将 [config.snippet.toml](./grok/config.snippet.toml) 合并到 `~/.grok/config.toml`：
 
 ```toml
 [compat.claude]
 agents = false
 ```
 
-等价环境变量：`GROK_CLAUDE_AGENTS_ENABLED=false`。详见 [避免 Claude 规则双份注入](#避免-claude-规则双份注入)。
+这关闭用户级 Claude 指令与 agents 兼容加载；不应删除 Claude 配置，也不能假定它关闭项目 `CLAUDE.md` 的发现。用 `grok inspect` 检查当前版本实际注入的规则与角色。
 
-**5. 项目级 agent（可选）：** 复制到 `<项目>/.grok/agents/`；roles 可放到 `<项目>/.grok/roles/`。
-
-**6. 重启 Grok 会话**，或新开一个会话使发现结果生效。
-
-## 双 lane
-
-日常工作走 **light lane**。只有用户明确要求隔离、独立 QA 或证据，或任务涉及发布/外部写入、付款、迁移、不可逆删除、安全边界、全局配置/CI/toolchain、多 writer，或在 commit/push/PR 前要求高保障核验时，才进入 **verified lane**。多文件或非平凡任务不是触发条件。
-
-默认直接处理普通工作；只在有界委派明显提升质量、速度、独立性或上下文时用 `spawn_subagent`。按风险升级独立 QA，安全、不可逆或用户明确高保障时加 fresh read-only review。完整可审计流程仅在用户明确采用时参考 [docs/verified-lane.md](./docs/verified-lane.md)，不代表 Grok permission mode 或权限模型。
-
-## Agent 定义
-
-每个 agent 是带 YAML frontmatter 的 Markdown，与官方 agent profile 一致。发现优先级（高到低）：CLI `--agent-profile` → config `[agent]` → 项目 `.grok/agents/` → 用户 `~/.grok/agents/` → bundled。
-
-关键 frontmatter（对齐 bundled agents + effort 分层）：
-
-| 字段 | 含义 |
-| --- | --- |
-| `name` | 路由名，即 `spawn_subagent` 的 `subagent_type` |
-| `description` | 主模型决定何时委派时使用 |
-| `model` | 固定模型，或 `inherit` 继承父会话 |
-| `effort` | 该 agent 的 reasoning effort（`high` / `medium` / `low` 等，以模型菜单为准） |
-| `prompt_mode` | 本模板使用 `full` |
-| `permission_mode` | `plan`（只读规划）或 `default` |
-| `agents_md` | `true`：子会话加载项目规则 |
-
-### 本模板三件套
-
-| Agent | model | effort | permission_mode | 说明 |
-| --- | --- | --- | --- | --- |
-| `deep-reasoner` | `grok-4.5` | `high` | `plan` | 只读推理，产出结论 |
-| `fast-worker` | `grok-4.5` | `medium` | `default` | 可写文件，短报告变更 |
-| `qa-runner` | `grok-4.5` | `low` | `default` | 可跑测试；指令禁止改源码 |
-
-若本地出现更轻量模型（例如文档中的 `grok-build`），可将 `fast-worker` / `qa-runner` 的 `model` 改为该 ID，并用 `grok models` 确认可用。
-
-也可在 `~/.grok/config.toml` 用 per-type 覆盖模型：
-
-```toml
-[subagents.models]
-deep-reasoner = "grok-4.5"
-fast-worker = "grok-4.5"
-qa-runner = "grok-4.5"
-```
-
-## Reasoning effort 分层
-
-同一模型（当前默认 `grok-4.5`）下，用 **effort** 模拟 Claude/Codex 的「重 / 中 / 轻」分层。
-
-### 官方解析顺序（`16-subagents.md`）
-
-有效 model / reasoning effort 优先级（高 → 低）：
-
-1. spawn 时显式覆盖  
-2. **Role 默认**（`reasoning_effort`）  
-3. **Persona 默认**  
-4. **父会话**（例如 `[models] default_reasoning_effort`）
-
-本模板用两层保险：
-
-1. **Agent frontmatter `effort:`**（与 skills 字段名一致；插件生态常用）  
-2. **同名 Role 文件** `~/.grok/roles/<name>.toml` 中的 `reasoning_effort`（官方 role 字段）
-
-```toml
-# grok/roles/deep-reasoner.toml
-description = "Reasoning-heavy phases: root cause, architecture, tradeoffs"
-default_capability_mode = "read-only"
-reasoning_effort = "high"
-```
-
-Roles 发现路径：项目 `.grok/roles/*.toml`、用户 `~/.grok/roles/*.toml`，以及 `config.toml` 的 `[subagents.roles.*]`（inline 优先于文件）。
-
-> 父会话若设 `default_reasoning_effort = "high"`，未配置 effort 的子 agent 会继承 high。qa-runner / fast-worker **必须**显式压低，否则三档退化成一档。
-
-`grok-4.5` 当前菜单档位通常为 `high` / `medium` / `low`；以 `grok models` 与 TUI `/effort` 为准。
-
-## 避免 Claude 规则双份注入
-
-Grok 默认开启 Claude 兼容。若同时存在：
-
-- `~/.grok/rules/AGENTS.md`（Shiki Grok 全局编排）
-- `~/.claude/Claude.md` 或 `~/.claude/CLAUDE.md`（Claude Code 全局编排）
-
-主会话会**双份注入**近乎相同的 Orchestration 文本。
-
-### 推荐配置
-
-```toml
-# ~/.grok/config.toml
-[compat.claude]
-agents = false   # 不注入 ~/.claude/Claude.md，也不扫 ~/.claude/agents
-# skills = true  # 默认；仍可用 Claude skills
-# rules  = true  # 仅影响 ~/.claude/rules/，不是 Claude.md
-```
-
-| 开关 | 作用 |
-| --- | --- |
-| `agents = false` | 停用 `~/.claude/` 下命名指令文件与 `~/.claude/agents`；`grok inspect` 中对应项显示 `[disabled]` |
-| `rules = false` | 停用 `~/.claude/rules/`，**不**控制仓库根 `CLAUDE.md` |
-| 项目根 `CLAUDE.md` / `Claude.md` | 官方仍会识别（与 Claude Code 工作流兼容），**不受** `agents` 开关影响 |
-
-因此：
-
-- **全局双份**：用 `compat.claude.agents = false` 解决。  
-- **项目内双份**（仓库既有 `CLAUDE.md` 又有全局 Grok 规则）：换只含 `AGENTS.md` 的项目，或接受两份并存并避免内容冲突。  
-- **仍使用 Claude Code**：保留 `~/.claude/Claude.md` 与 `~/.claude/agents`；只在 Grok 侧关 compat 即可，不必删除 Claude 配置。
-
-验证：
+## 验证与版本
 
 ```bash
+grok --version
+grok models
 grok inspect
-# 期望：~/.claude/Claude.md 带 [disabled] 或不再有效注入
-# 期望：仍有 ~/.grok/rules/AGENTS.md 与 user agents deep-reasoner / fast-worker / qa-runner
+python3 evals/codex_eval.py preflight
+python3 evals/codex_eval.py run --adapter grok --suite plumbing --dry-run
 ```
 
-## AGENTS.md 与全局规则
+在 `/config-agents` 或 `/agents` 中确认三个角色，用任务窗检查显式委派的子会话、模型与 effort。再检查普通小任务直接执行，独立核验任务按顺序分派。没有委派不单独构成普通任务失败。
 
-**内容与 Claude / Codex 版大体一致**：Git、Engineering Principles、Plan Documents、Definition of Done、Communication 可原样共用。Grok 版差异：
+Grok 1.0.24 的 direct 和 qa-runner 短请求已于 2026-09-09 实测：模型为 grok-4.6-build，QA effort 为 low。子任务由父调用结果的 subagent_id 与持久化 metadata 关联，不能按轮询顺序猜测。脱敏结构样本进入 evals 回归；这不等于完整策略套件或其他两个角色已通过 live 验收。
 
-1. 委派动词明确为 **spawn**，并写出 `subagent_type` 字符串。
-2. 补充 `capability_mode` 与 **depth=1** 约束。
-3. 保留 high-stakes 双 agent 并行（Grok 原生支持并行 subagent）。
-
-主模型通过 `spawn_subagent` 启动子会话；自定义 agent 的 `name` 必须与路由名一致。
-
-## 验证委派真的发生了
-
-不要只确认文件已复制。
-
-1. 运行 `grok inspect`，确认：
-   - Project Instructions 含 `~/.grok/rules/AGENTS.md`
-   - `~/.claude/Claude.md` 为 disabled（若已关 compat agents）
-   - Agents 含 user：`deep-reasoner` / `fast-worker` / `qa-runner`
-2. 在 TUI 中打开 `/config-agents`（或 `/agents`），列表含上述三个。
-3. 显式要求：spawn `deep-reasoner` 做小型方案；用 `Ctrl+G` 任务窗确认子会话与 effort。
-4. 新开会话做可选路由 smoke：拼写修正应直接处理；独立、复杂且边界清晰的子任务才可能 spawn。未分派不单独构成失败，应结合任务边界、当前版本与日志判断。
-5. 核对子 agent 的 model / effort；未分派时检查规则是否加载、agent 路径、以及 `GROK_SUBAGENTS` / `[subagents] enabled`。
-
-验证关注点：**是否委派、派给谁、用什么模型 / effort**。
-
-## 注意事项
-
-- **先合并规则，再按项目调整。** 模板里的 Git / 计划文档约定不一定适合所有仓库；全局 `~/.grok/rules/` 会影响所有项目。
-- **模型可相同，effort 分层。** 默认全是 `grok-4.5`，用 high/medium/low 拉开推理成本。
-- **qa-runner 只报告，不修复。** 失败回主模型再派 `fast-worker`。
-- **并行写文件要谨慎。** 默认可串行：分析 → 实施 → 验证；隔离写入可用 `isolation: worktree`。
-- **Grok 用户优先 `~/.grok/agents` + `compat.claude.agents = false`。** 避免 Claude 模型名与双份规则。
-- **委派不等于省钱。** 收益是职责隔离、验证闭环、主会话上下文更干净；effort 分层是额外杠杆。
+新版 headless 参数已移除 `--no-memory`，使用进程环境 `GROK_MEMORY=0` 关闭跨会话 memory。评测仍会加载真实用户配置与连接；fixture 隔离不等于账户隔离。未观测到 capability 或 shell 副作用时保留 UNKNOWN，不凭配置补造权限证据。详情见 [evals 指南](./evals/README.md)。
 
 ## 参考
 
-- [统一入口 README](./README.md)
-- [Grok 编排规则模板](./grok/AGENTS.md)
-- [Grok agent 定义](./grok/agents/)
-- [Grok roles](./grok/roles/)
-- [config 片段](./grok/config.snippet.toml)
-- 本机文档：`~/.grok/docs/user-guide/12-project-rules.md`、`16-subagents.md`、`05-configuration.md`（Harness compatibility）
+- [官方 Grok 4.6 模型说明](https://docs.x.ai/developers/models/grok-4.6)
+- 安装版本本地官方指南：`~/.grok/docs/user-guide/12-project-rules.md`、`16-subagents.md`、`13-memory.md`、`14-headless-mode.md`
+- [统一入口与 Claude 配置](./README.md)
