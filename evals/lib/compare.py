@@ -18,14 +18,40 @@ def _cases(summary: dict[str, Any]) -> set[str]:
     return {str(row.get("case")) for row in summary.get("results", [])}
 
 
-def confounders(baseline: dict[str, Any], candidate: dict[str, Any]) -> list[str]:
+def confounders(baseline: dict[str, Any], candidate: dict[str, Any], mode: str = "rules") -> list[str]:
     reasons: list[str] = []
     for field in ("source_drift", "dry_run"):
         if baseline.get(field) or candidate.get(field):
             reasons.append(field)
-    for field in ("runner_sha256", "manifest_sha256", "suite", "adapter", "model", "cli_version", "executable_sha256", "toolchain_digest", "network_env_digest"):
+    for field in ("runner_sha256", "manifest_sha256", "suite", "adapter", "model", "effort", "cli_version", "executable_sha256", "toolchain_digest", "network_env_digest"):
+        if field == "model" and mode == "models":
+            continue
         if baseline.get(field) != candidate.get(field):
             reasons.append(f"{field}_drift")
+    if mode == "models":
+        for field in ("repetitions", "timeout", "max_input_tokens"):
+            for label, summary in (("baseline", baseline), ("candidate", candidate)):
+                if summary.get(field) is None:
+                    reasons.append(f"{label}_{field}_unobserved")
+            if baseline.get(field) != candidate.get(field):
+                reasons.append(f"{field}_drift")
+        for label, summary in (("baseline", baseline), ("candidate", candidate)):
+            requested = summary.get("model")
+            rows = summary.get("results", [])
+            if not requested or not rows:
+                reasons.append(f"{label}_model_unobserved")
+                continue
+            for row in rows:
+                actual = (row.get("actual_parent_runtime") or {}).get("model")
+                if not actual:
+                    reasons.append(f"{label}_model_unobserved")
+                    break
+                models = (row.get("actual_parent_runtime") or {}).get("observed_models") or [actual]
+                if any(model != requested and not model.startswith(requested + "-") for model in models):
+                    reasons.append(f"{label}_model_mismatch")
+                    break
+    if mode == "models" and baseline.get("config_digest") != candidate.get("config_digest"):
+        reasons.append("config_digest_drift")
     if _cases(baseline) != _cases(candidate):
         reasons.append("case_set_drift")
     for key in ("case_digest", "fixture_digest"):
@@ -36,8 +62,10 @@ def confounders(baseline: dict[str, Any], candidate: dict[str, Any]) -> list[str
     return sorted(set(reasons))
 
 
-def compare_summaries(baseline: dict[str, Any], candidate: dict[str, Any], wilson, min_effect: float) -> dict[str, Any]:
-    reasons = confounders(baseline, candidate)
+def compare_summaries(baseline: dict[str, Any], candidate: dict[str, Any], wilson, min_effect: float, mode: str = "rules") -> dict[str, Any]:
+    if mode not in {"rules", "models"}:
+        raise ValueError("unknown comparison mode")
+    reasons = confounders(baseline, candidate, mode)
     per_case: list[dict[str, Any]] = []
     regression = False
     for case in sorted(_cases(baseline) | _cases(candidate)):
@@ -71,4 +99,4 @@ def compare_summaries(baseline: dict[str, Any], candidate: dict[str, Any], wilso
         hard_comparison = "REGRESSED" if hard_regression else ("INCONCLUSIVE" if hard and (not clean_baseline or infra_only) else "NO_REGRESSION")
         per_case.append({"case": case, "hard_baseline": base_hard, "hard_candidate": cand_hard, "hard_regression": hard_regression, "hard_comparison": hard_comparison, "behavioral": behavior, "baseline": {"pass": bpass, "n": bn, "rate": bpass / bn if bn else None, "wilson95": binterval}, "candidate": {"pass": cpass, "n": cn, "rate": cpass / cn if cn else None, "wilson95": cinterval}})
     inconclusive = any(row["hard_comparison"] == "INCONCLUSIVE" or row["behavioral"] == "INCONCLUSIVE" for row in per_case)
-    return {"generated_at": utc(), "min_effect": min_effect, "rule": "behavioral change requires min_effect and non-overlapping Wilson 95% intervals; otherwise INCONCLUSIVE", "confounders": reasons, "status": "CONFOUNDED" if reasons else ("REGRESSION" if regression else ("INCONCLUSIVE" if inconclusive else "PASS")), "cases": per_case}
+    return {"generated_at": utc(), "mode": mode, "models": {"baseline": baseline.get("model"), "candidate": candidate.get("model")}, "usage": {"baseline": baseline.get("metrics", {}).get("usage"), "candidate": candidate.get("metrics", {}).get("usage")}, "min_effect": min_effect, "rule": "behavioral change requires min_effect and non-overlapping Wilson 95% intervals; otherwise INCONCLUSIVE", "confounders": reasons, "status": "CONFOUNDED" if reasons else ("REGRESSION" if regression else ("INCONCLUSIVE" if inconclusive else "PASS")), "cases": per_case}

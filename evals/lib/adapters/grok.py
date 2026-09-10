@@ -1,6 +1,6 @@
 """Grok Build CLI adapter.
 
-Evidence model (probe-verified on grok 0.2.118 and structurally verified on 1.0.5):
+Evidence model (probe-verified on grok 0.2.118 and structurally verified on 1.0.5 and 1.0.24):
 - `grok --single ... --output-format streaming-json` emits an ACP NDJSON
   stream: tool_call / usage / end events; `end` carries the session id.
 - Every session (parent and spawned subagents) is stored under
@@ -19,20 +19,19 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from ..common import frontmatter
-from ..evidence import _safe, secret_patterns, usage_values
+from ..evidence import _safe, reported_cost, secret_patterns, usage_values
 from ..runtime import run_process
 from .base import EvalAdapter
 
 RUNTIME_FIELDS = ("name", "model", "effort", "permission_mode")
 CAPABILITY_MAP = {"read-write": "workspace-write", "read-only": "read-only"}
-# Capability mode is a coarse per-spawn tool filter; write-capability is the
-# contract axis (read-only/execute cannot edit files; read-write/all can).
 WRITE_LEVEL = {"read-only": 0, "execute": 0, "workspace-write": 1, "read-write": 1, "all": 1}
 WRITE_TOOLS = {"search_replace", "apply_patch", "Bash", "bash", "run_terminal_command"}
 KNOWN_NON_EVIDENCE_TOOLS = {"grep", "read_file", "list_dir", "get_command_or_subagent_output", "kill_command_or_subagent", "web_search", "web_fetch", "todo_write", "enter_plan_mode", "exit_plan_mode", "ask_user_question", "use_tool", "workflow", "monitor", "scheduler_create", "scheduler_delete", "scheduler_list", "search_tool"}
@@ -49,11 +48,11 @@ def _epoch_to_iso(ts: Any) -> str | None:
 class GrokAdapter(EvalAdapter):
     name = "grok"
     binary = "grok"
-    VERSION = re.compile(r"\b(?:0\.\d+\.\d+|1\.0\.5)\b")
-    default_model = "grok-4.5"
+    VERSION = re.compile(r"\b(?:0\.\d+\.\d+|1\.0\.(?:5|24))\b")
+    default_model = "grok-4.6"
     prompt_via = "argv"
 
-    def runtime_contract(self, declared: dict[str, str], actual: dict[str, Any]) -> bool:
+    def runtime_contract(self, declared: dict[str, str], actual: dict[str, Any]) -> bool | None:
         # The CLI accepts family ids ("grok-4.5") while session evidence records the
         # deployed build ("grok-4.5-build"); a declared family matches its build.
         # Capability mode is model-chosen per spawn: the declared mode is a ceiling,
@@ -61,7 +60,11 @@ class GrokAdapter(EvalAdapter):
         model_ok = actual.get("model") == declared["model"] or str(actual.get("model", "")).startswith(declared["model"] + "-")
         sandbox = actual.get("sandbox_policy")
         sandbox_type = sandbox.get("type") if isinstance(sandbox, dict) else sandbox
-        sandbox_ok = WRITE_LEVEL.get(sandbox_type, 0) <= WRITE_LEVEL.get(declared["sandbox_type"], 0)
+        if not model_ok or actual.get("effort") != declared["effort"]:
+            return False
+        if sandbox_type not in WRITE_LEVEL:
+            return None
+        sandbox_ok = sandbox_type in WRITE_LEVEL and declared["sandbox_type"] in WRITE_LEVEL and WRITE_LEVEL[sandbox_type] <= WRITE_LEVEL[declared["sandbox_type"]]
         return model_ok and actual.get("effort") == declared["effort"] and sandbox_ok
 
     def __init__(self) -> None:
@@ -70,7 +73,7 @@ class GrokAdapter(EvalAdapter):
 
     # -- candidate -------------------------------------------------------
     def candidate_paths(self, repo: Path) -> list[Path]:
-        return [repo / "grok" / "AGENTS.md", *sorted((repo / "grok" / "agents").glob("*.md"))]
+        return [repo / "grok" / "AGENTS.md", *sorted((repo / "grok" / "agents").glob("*.md")), *sorted((repo / "grok" / "roles").glob("*.toml"))]
 
     def snapshot(self, repo: Path, output: Path) -> dict[str, object]:
         mds = [path for path in self.candidate_paths(repo) if path.suffix == ".md"]
@@ -99,20 +102,23 @@ class GrokAdapter(EvalAdapter):
 
     # -- per-case lifecycle ----------------------------------------------
     def injected_paths(self, work: Path) -> tuple[str, ...]:
-        return self._injected_instruction_paths(work, "AGENTS.md", ".grok/agents")
+        return (*self._injected_instruction_paths(work, "AGENTS.md", ".grok/agents"), *[str(path.relative_to(work)) for path in sorted((work / ".grok/roles").glob("*.toml"))])
 
     def prepare(self, work: Path, snapshot: Path, effort: str) -> None:
         # Candidate injection via cwd discovery; prompt_context.json records it.
         self.snapshot_path = str(snapshot)
         self._inject_cwd_instructions(work, snapshot, "AGENTS.md", ".grok/agents")
+        if (snapshot / "roles").is_dir():
+            shutil.copytree(snapshot / "roles", work / ".grok" / "roles")
 
     def invocation(self, work: Path, prompt: str, model: str, effort: str) -> list[str]:
         # resolve() canonicalizes macOS /var -> /private/var so the session dir key
         # grok records matches the one session_evidence looks up.
-        return [self.info["binary"], "--single", prompt, "--cwd", str(work.resolve()), "--output-format", "streaming-json", "--permission-mode", "auto", "--reasoning-effort", effort, "--model", model, "--disable-web-search", "--no-memory"]
+        return [self.info["binary"], "--single", prompt, "--cwd", str(work.resolve()), "--output-format", "streaming-json", "--permission-mode", "auto", "--reasoning-effort", effort, "--model", model, "--disable-web-search"]
 
     def run(self, work: Path, prompt: str, model: str, effort: str, timeout: int) -> tuple[int, str, str]:
         env = dict(os.environ)
+        env["GROK_MEMORY"] = "0"
         env["PYTHONDONTWRITEBYTECODE"] = "1"  # test runs must not leave bytecode artifacts
         return run_process(self.invocation(work, prompt, model, effort), prompt="", env=env, cwd=work, timeout=timeout)
 
@@ -132,7 +138,7 @@ class GrokAdapter(EvalAdapter):
             typ = event.get("type")
             if typ == "end":
                 self.session_id = event.get("sessionId")
-                record = {"type": "turn.completed", "usage": usage_values(event.get("usage"))}
+                record = {"type": "turn.completed", "usage": usage_values(event.get("usage")), "reported_cost_usd": reported_cost(event.get("total_cost_usd"))}
                 lines.append(json.dumps(record, ensure_ascii=False))
             elif typ == "tool_call":
                 # A file change is a definite edit tool call; bash is write-capable but
@@ -178,11 +184,12 @@ class GrokAdapter(EvalAdapter):
         return written, sorted(pattern for pattern in secret_hits if pattern != "local-path")
 
     def _parent_facts(self, parent_dir: Path) -> tuple[dict[str, str], dict[str, str], set[str]]:
-        """Map child session ids to role and capability from the parent's spawn + wait calls."""
-        spawns: list[tuple[str, str]] = []
-        tasks: list[str] = []
-        wait_calls: dict[str, list[str]] = {}
+        spawns: dict[str, tuple[str, str | None]] = {}
+        waits: dict[str, list[str]] = {}
+        role_map: dict[str, str] = {}
+        capability_map: dict[str, str] = {}
         completed: set[str] = set()
+        self.child_lifecycles = {}
         for line in (parent_dir / "chat_history.jsonl").read_text(errors="replace").splitlines():
             try:
                 event = json.loads(line)
@@ -190,26 +197,47 @@ class GrokAdapter(EvalAdapter):
                 continue
             if event.get("type") == "assistant":
                 for call in event.get("tool_calls") or []:
-                    name = call.get("name")
                     try:
                         args = json.loads(call.get("arguments") or "{}")
                     except json.JSONDecodeError:
-                        args = {}
-                    if name == "spawn_subagent":
-                        spawns.append((args.get("subagent_type") or "unknown-role", args.get("capability_mode")))
-                    elif name == "get_command_or_subagent_output":
-                        ids = args.get("task_ids") or []
-                        wait_calls[call.get("id")] = ids
-                        tasks.extend(ids)
-            elif event.get("type") == "tool_result" and event.get("tool_call_id") in wait_calls:
-                completed.update(wait_calls[event["tool_call_id"]])
-        role_map: dict[str, str] = {}
-        capability_map: dict[str, str] = {}
-        for index, task_id in enumerate(tasks):
-            role, capability = spawns[index] if index < len(spawns) else ("unknown-role", None)
-            role_map[task_id] = role
-            if capability:
-                capability_map[task_id] = capability
+                        continue
+                    if not isinstance(args, dict):
+                        continue
+                    if call.get("name") == "spawn_subagent":
+                        spawns[call.get("id")] = (args.get("subagent_type") or "unknown-role", args.get("capability_mode"))
+                    elif call.get("name") == "get_command_or_subagent_output":
+                        waits[call.get("id")] = args.get("task_ids") or []
+            elif event.get("type") == "tool_result":
+                call_id = event.get("tool_call_id")
+                content = event.get("content")
+                if not isinstance(content, str):
+                    continue
+                if call_id in spawns:
+                    match = re.search(r"(?m)^subagent_id: ([A-Za-z0-9-]+)$", content)
+                    if match:
+                        sid = match.group(1)
+                        role, capability = spawns[call_id]
+                        role_map[sid] = role
+                        if capability:
+                            capability_map[sid] = capability
+                elif call_id in waits:
+                    for sid in waits[call_id]:
+                        block = re.search(r"(?ms)^=== Task " + re.escape(sid) + r" ===\n(.*?)(?=^=== (?:Task |Output)|\Z)", content)
+                        if block and re.search(r"(?m)^Status: completed$", block.group(1)):
+                            completed.add(sid)
+        for path in sorted((parent_dir / "subagents").glob("*/meta.json")):
+            try:
+                meta = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            sid = meta.get("child_session_id")
+            if meta.get("parent_session_id") != parent_dir.name or sid != path.parent.name or meta.get("subagent_id") != sid:
+                continue
+            if role_map.get(sid) != meta.get("subagent_type"):
+                continue
+            if meta.get("status") == "completed" and meta.get("started_at") and meta.get("completed_at"):
+                completed.add(sid)
+                self.child_lifecycles[sid] = (meta["started_at"], meta["completed_at"])
         return role_map, capability_map, completed
 
     def _session_records(self, session_dir: Path, sid: str, role: str | None, capability: str | None, completed_tasks: set[str]) -> list[dict[str, Any]]:
@@ -218,6 +246,7 @@ class GrokAdapter(EvalAdapter):
         if not chat.is_file():
             return records
         model = effort = None
+        observed_models = set()
         for line in chat.read_text(errors="replace").splitlines():
             try:
                 event = json.loads(line)
@@ -226,6 +255,8 @@ class GrokAdapter(EvalAdapter):
                 continue
             if event.get("type") != "assistant":
                 continue
+            if event.get("model_id"):
+                observed_models.add(event["model_id"])
             if model is None:
                 model = event.get("model_id")
                 effort = event.get("reasoning_effort")
@@ -237,21 +268,18 @@ class GrokAdapter(EvalAdapter):
                     args = {}
                 if name == "spawn_subagent":
                     records.append({"type": "response_item", "item_type": "custom_tool_call", "name": "spawn_subagent", "call_id": call.get("id"), "arguments": {"subagent_type": args.get("subagent_type"), "capability_mode": args.get("capability_mode")}})
+                elif name in {"Bash", "bash", "run_terminal_command"}:
+                    records.append({"type": "response_item", "item_type": "function_call", "name": "exec"})
                 elif name in WRITE_TOOLS:
-                    # A write-capable tool is only a write attempt when a child runs it
-                    # under an edit-permitting capability (read-write/all); under
-                    # read-only/execute the sandbox blocks the edit, and parent shell
-                    # usage is observed through stream file_change, not an attempt.
-                    if role and WRITE_LEVEL.get(CAPABILITY_MAP.get(capability, capability), 0) >= 1:
-                        records.append({"type": "session_write_attempt", "tool": name})
+                    records.append({"type": "session_write_attempt", "tool": name})
                 elif name in KNOWN_NON_EVIDENCE_TOOLS:
                     continue
                 else:
                     records.append({"type": "evidence_anomaly", "reason": "unknown-tool", "name": name})
         sandbox_type = CAPABILITY_MAP.get(capability, capability) if capability else None
         records.insert(0, {"type": "session_meta", "session_id": sid, "thread_id": None, "agent_role": role, "started_at": None})
-        records.insert(1, {"type": "turn_context", "model": model, "effort": effort, "sandbox_policy": {"type": sandbox_type}})
-        timestamps = self._updates_timestamps(session_dir)
+        records.insert(1, {"type": "turn_context", "model": model, "observed_models": sorted(observed_models), "effort": effort, "sandbox_policy": {"type": sandbox_type}})
+        timestamps = getattr(self, "child_lifecycles", {}).get(sid) or self._updates_timestamps(session_dir)
         if timestamps:
             started_at, completed_at = timestamps
             records.append({"type": "session_lifecycle", "phase": "task_started", "outcome": "started", "started_at": started_at, "completed_at": None})

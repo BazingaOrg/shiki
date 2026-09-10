@@ -40,8 +40,7 @@ class EvaluationTests(unittest.TestCase):
         boundary = next(case for case in manifest["cases"] if case["id"] == "policy-boundary-bulk-light")
         self.assertEqual(set(boundary["expected"]["routing"]["none_of"]), {"deep-reasoner", "fast-worker", "qa-runner"})
         bulk = next(case for case in manifest["cases"] if case["id"] == "policy-bulk-config")
-        self.assertEqual(bulk["expected"]["routing"]["all_of"], ["fast-worker"])
-        self.assertEqual(bulk["expected"]["routing"]["none_of"], ["deep-reasoner", "qa-runner"])
+        self.assertEqual(bulk["expected"]["routing"], {"allowed_roles": ["fast-worker"]})
         self.assertTrue(any("core" in case["suites"] for case in manifest["cases"] if case["id"] == "policy-typo-direct"))
         for case in manifest["cases"]:
             if case["kind"] == "policy": self.assertIsNone(M.FORBIDDEN_POLICY_TOKENS.search(case["prompt"]))
@@ -76,7 +75,7 @@ class EvaluationTests(unittest.TestCase):
         trace = self.trace(["qa-runner", "deep-reasoner"])
         self.assertEqual(M.grade(case, {}, {}, trace, None)["hard_status"], "PASS")
         trace["child_write_capable_attempts"] = 1
-        self.assertEqual(M.grade(case, {}, {}, trace, None)["hard_status"], "FAIL")
+        self.assertEqual(M.grade(case, {}, {}, trace, None)["hard_status"], "UNKNOWN")
         trace["child_write_capable_attempts"] = 0
         trace["native_agents"][0]["completed_at"] = 99
         self.assertEqual(M.grade(case, {}, {}, trace, None)["hard_status"], "FAIL")
@@ -192,7 +191,7 @@ class EvaluationTests(unittest.TestCase):
         results = []
         for status in statuses:
             results.append({"case": "policy-x", "kind": "policy", "case_digest": "case", "grade": {"hard_gate": True, "hard_status": status, "behavioral_status": status}})
-        return {"runner_sha256": "runner", "manifest_sha256": "manifest", "config_digest": "config", "suite": "full", "model": "m", "cli_adapter": "x", "dry_run": dry, "source_drift": drift, "results": results}
+        return {"runner_sha256": "runner", "manifest_sha256": "manifest", "repetitions": 1, "timeout": 300, "max_input_tokens": 0, "config_digest": "config", "suite": "full", "model": "m", "cli_adapter": "x", "dry_run": dry, "source_drift": drift, "results": results}
 
     def test_compare_mixed_hard_baseline_is_inconclusive_not_regression(self):
         report = M.compare_summaries(self.summary(["PASS", "UNKNOWN"]), self.summary(["FAIL", "FAIL"]), M.wilson, .2)
@@ -280,14 +279,14 @@ class EvaluationTests(unittest.TestCase):
         self.assertIn("explicit_subagent_support", facts["observations"])
 
     def test_factcheck_wires_guidance_claim_to_policy_routing(self):
-        def policy_row(case, status):
-            return {"case": case, "kind": "policy", "actual_child_runtime": [], "grade": {"hard_status": "PASS" if status == "PASS" else "FAIL", "behavioral_status": status}}
+        def policy_row(case, status, roles=()):
+            return {"case": case, "kind": "policy", "actual_child_runtime": [{"role": role} for role in roles], "grade": {"hard_status": "PASS" if status == "PASS" else "FAIL", "behavioral_status": status}}
         summary = self.summary(["PASS"])
-        summary["results"] = [policy_row("policy-architecture", "PASS")]
+        summary["results"] = [policy_row("policy-architecture", "PASS", ["deep-reasoner"])]
         facts = M.factcheck(summary)
         guidance = next(claim for claim in facts["claims"] if claim["id"] == "subagents-guidance-trigger")
         self.assertEqual(guidance["outcome"], "confirmed")
-        summary["results"] = [policy_row("policy-architecture", "FAIL")]
+        summary["results"] = [policy_row("policy-auth-high-assurance", "FAIL")]
         facts = M.factcheck(summary)
         guidance = next(claim for claim in facts["claims"] if claim["id"] == "subagents-guidance-trigger")
         self.assertEqual(guidance["outcome"], "conflict")
@@ -335,7 +334,7 @@ class EvaluationTests(unittest.TestCase):
         )
         for path in (M.REPO / "CLAUDE.md", M.REPO / "codex" / "AGENTS.md", M.REPO / "grok" / "AGENTS.md"):
             rules = path.read_text()
-            self.assertIn("action/impact, not file count", rules)
+            self.assertIn("file count, and topic labels alone do not trigger", rules)
             self.assertIn("handle small edits directly when delegation offers no clear benefit", rules)
             self.assertIsNone(fixed_count_routing.search(rules), f"{path.relative_to(M.REPO)} forces delegation by file count")
 
@@ -383,6 +382,8 @@ class EvaluationTests(unittest.TestCase):
     def test_grok_version_gate_accepts_verified_builds_only(self):
         self.assertIsNotNone(GrokAdapter.VERSION.search("grok 0.2.118"))
         self.assertIsNotNone(GrokAdapter.VERSION.search("grok 1.0.5 (5115b46bc909)"))
+        self.assertIsNotNone(GrokAdapter.VERSION.search("grok 1.0.24 (68e414c661e3)"))
+        self.assertIsNone(GrokAdapter.VERSION.search("grok 1.0.25"))
         self.assertIsNone(GrokAdapter.VERSION.search("grok 1.0.6"))
         self.assertIsNone(GrokAdapter.VERSION.search("grok 2.0.0"))
 
@@ -426,8 +427,9 @@ class EvaluationTests(unittest.TestCase):
             (parent_dir / "chat_history.jsonl").write_text("\n".join([
                 '{"type":"user","content":"Spawn fast-worker to append a line to NOTES.md."}',
                 '{"type":"assistant","content":"","model_id":"grok-4.5-build","reasoning_effort":"high","tool_calls":[{"id":"c1","name":"spawn_subagent","arguments":"{\\"subagent_type\\":\\"fast-worker\\",\\"capability_mode\\":\\"read-write\\"}"}]}',
+                '{"type": "tool_result", "tool_call_id": "c1", "content": "Subagent started in background.\\nsubagent_id: child-222\\n"}',
                 '{"type":"assistant","content":"","model_id":"grok-4.5-build","reasoning_effort":"high","tool_calls":[{"id":"c2","name":"get_command_or_subagent_output","arguments":"{\\"task_ids\\":[\\"child-222\\"]}"}]}',
-                '{"type":"tool_result","tool_call_id":"c2","content":"appended one line"}',
+                '{"type":"tool_result","tool_call_id":"c2","content":"=== Task child-222 ===\\nStatus: completed\\nExit Code: 0\\n=== Output ==="}',
             ]) + "\n")
             (parent_dir / "updates.jsonl").write_text('{"timestamp": 1000}\n{"timestamp": 2000}\n')
             (parent_dir / "prompt_context.json").write_text(json.dumps({"agents_md_files": [{"file_name": "AGENTS.md", "file_path": str(work) + "/AGENTS.md", "content": "marker-content"}]}))
@@ -454,9 +456,9 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(agent["role"], "fast-worker")
             self.assertEqual(agent["runtime"], {"model": "grok-4.5-build", "effort": "medium", "sandbox_policy": {"type": "workspace-write"}})
             self.assertEqual(agent["outcome"], "completed")
-            self.assertEqual(trace["child_write_capable_attempts"], 1)
+            self.assertEqual(trace["child_mutation_attempts"], 1)
 
-    def test_grok_write_attempts_require_edit_capable_capability(self):
+    def test_grok_shell_effects_are_not_proven_by_capability_labels(self):
         def run_case(capability, tool):
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -470,8 +472,9 @@ class EvaluationTests(unittest.TestCase):
                 child_dir.mkdir(parents=True)
                 (parent_dir / "chat_history.jsonl").write_text("\n".join([
                     '{"type":"assistant","content":"","model_id":"grok-4.5-build","reasoning_effort":"high","tool_calls":[{"id":"c1","name":"spawn_subagent","arguments":"{\\"subagent_type\\":\\"qa-runner\\",\\"capability_mode\\":\\"%s\\"}"}]}' % capability,
+                    '{"type": "tool_result", "tool_call_id": "c1", "content": "Subagent started in background.\\nsubagent_id: child-222\\n"}',
                     '{"type":"assistant","content":"","model_id":"grok-4.5-build","reasoning_effort":"high","tool_calls":[{"id":"c2","name":"get_command_or_subagent_output","arguments":"{\\"task_ids\\":[\\"child-222\\"]}"}]}',
-                    '{"type":"tool_result","tool_call_id":"c2","content":"done"}',
+                    '{"type":"tool_result","tool_call_id":"c2","content":"=== Task child-222 ===\\nStatus: completed\\nExit Code: 0\\n=== Output ==="}',
                 ]) + "\n")
                 (parent_dir / "updates.jsonl").write_text('{"timestamp": 1000}\n{"timestamp": 2000}\n')
                 (parent_dir / "prompt_context.json").write_text(json.dumps({"agents_md_files": [{"file_name": "Agents.md", "file_path": str(work) + "/Agents.md", "content": "x"}]}))
@@ -486,12 +489,11 @@ class EvaluationTests(unittest.TestCase):
                     adapter.snapshot_path = str(snap)
                     paths, _ = adapter.session_evidence(work, root / "out")
                 return M.normalize_trace(paths)
-        # execute capability blocks edits: bash is not a write attempt
         trace = run_case("execute", "Bash")
-        self.assertEqual(trace["child_write_capable_attempts"], 0)
-        # read-write capability permits edits: search_replace is a write attempt
-        trace = run_case("read-write", "search_replace")
         self.assertEqual(trace["child_write_capable_attempts"], 1)
+        self.assertEqual(trace["child_mutation_attempts"], 0)
+        trace = run_case("read-write", "search_replace")
+        self.assertEqual(trace["child_mutation_attempts"], 1)
 
     # -- Claude adapter --------------------------------------------------
 
@@ -561,7 +563,7 @@ class EvaluationTests(unittest.TestCase):
             agent = trace["native_agents"][0]
             self.assertEqual(agent["role"], "fast-worker")
             self.assertEqual(agent["runtime"]["model"], "deepseek-v4-flash")
-            self.assertEqual(trace["child_write_capable_attempts"], 1)
+            self.assertEqual(trace["child_mutation_attempts"], 1)
             self.assertEqual(agent["outcome"], "completed")
 
     def test_claude_monitor_tool_is_non_evidence(self):
@@ -601,11 +603,17 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(_encode_project_path(work), encoded)
         self.assertNotIn("_", _encode_project_path(work))
 
-    def test_claude_runtime_contract_is_observation_only(self):
+    def test_claude_runtime_mismatch_fails_and_missing_evidence_stays_unknown(self):
         adapter = ClaudeAdapter()
-        declared = {"model": "sonnet", "effort": "unobserved", "sandbox_type": "workspace-write"}
-        # Claude Code does not enforce declared agent models; runtime is never asserted.
-        self.assertTrue(adapter.runtime_contract(declared, {"model": "deepseek-v4-flash", "effort": None, "sandbox_policy": {"type": None}}))
+        declared = {"model": "sonnet", "effort": "medium", "sandbox_type": "unobserved"}
+        observed = {"model": "deepseek-v4-flash", "effort": "unobserved", "sandbox_policy": {"type": "unobserved"}}
+        self.assertFalse(adapter.runtime_contract(declared, observed))
+        observed["model"] = "claude-sonnet-5"
+        self.assertIsNone(adapter.runtime_contract(declared, observed))
+        observed["effort"] = "high"
+        self.assertFalse(adapter.runtime_contract(declared, observed))
+        observed["effort"] = "medium"
+        self.assertIsNone(adapter.runtime_contract(declared, observed))
 
     def test_grok_runtime_contract_family_and_capability_ceiling(self):
         adapter = GrokAdapter()

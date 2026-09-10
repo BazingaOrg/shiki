@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -96,15 +97,18 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
         if case["kind"] == "policy" and FORBIDDEN_POLICY_TOKENS.search(case["prompt"]):
             errors.append(f"forbidden policy token: {ident}")
         expected = case["expected"]
-        allowed = {"routing", "runtime", "required_changed_paths", "exact_changed_paths", "protected_paths", "runner_commands", "hard_gate", "require_serial_completion", "require_same_identity"}
+        allowed = {"routing", "runtime", "required_changed_paths", "exact_changed_paths", "protected_paths", "runner_commands", "hard_gate", "require_serial_completion", "require_same_identity", "expected_contents"}
         if not isinstance(expected, dict) or set(expected) - allowed:
             errors.append(f"unknown expected field: {ident}")
             continue
         routing = expected.get("routing", {})
-        if not isinstance(routing, dict) or set(routing) - {"all_of", "none_of", "ordered_roles"}:
+        if not isinstance(routing, dict) or set(routing) - {"all_of", "none_of", "ordered_roles", "allowed_roles"}:
             errors.append(f"bad routing: {ident}")
-        elif any(role not in ROLES for key in ("all_of", "none_of", "ordered_roles") for role in routing.get(key, [])):
+        elif any(role not in ROLES for key in ("all_of", "none_of", "ordered_roles", "allowed_roles") for role in routing.get(key, [])):
             errors.append(f"bad routing role: {ident}")
+        contents = expected.get("expected_contents", {})
+        if not isinstance(contents, dict) or any(not safe_relative(key) or not isinstance(value, str) for key, value in contents.items()):
+            errors.append(f"bad expected_contents: {ident}")
         for key in ("required_changed_paths", "exact_changed_paths", "protected_paths"):
             if key in expected and _bad_paths(expected[key]):
                 errors.append(f"unsafe {key}: {ident}")
@@ -123,12 +127,24 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
 
 def _runtime_status(expected: dict[str, Any], trace: dict[str, Any], contract: Any = None) -> tuple[str, str]:
     check = contract or exact_runtime
+    unknown_reason = None
     for wanted in expected.get("runtime", []):
-        actual = next((item.get("runtime") for item in trace["native_agents"] if item["role"] == wanted["role"]), None)
-        if not actual or any(actual.get(key) is None for key in ("model", "effort", "sandbox_policy")):
-            return "UNKNOWN", "runtime contract missing"
-        if not check(wanted, actual):
-            return "FAIL", "runtime contract mismatch"
+        matches = [item.get("runtime") for item in trace["native_agents"] if item["role"] == wanted["role"]]
+        if not matches:
+            if wanted["role"] not in expected.get("routing", {}).get("allowed_roles", []):
+                unknown_reason = "runtime contract missing"
+            continue
+        for actual in matches:
+            if not actual or any(actual.get(key) is None for key in ("model", "effort", "sandbox_policy")):
+                unknown_reason = "runtime contract missing"
+                continue
+            matched = check(wanted, actual)
+            if matched is None:
+                unknown_reason = "runtime contract unobserved"
+            elif not matched:
+                return "FAIL", "runtime contract mismatch"
+    if unknown_reason:
+        return "UNKNOWN", unknown_reason
     return "PASS", "runtime matched"
 
 
@@ -145,10 +161,8 @@ def _identity_status(expected: dict[str, Any], trace: dict[str, Any]) -> tuple[s
         return "UNKNOWN", "runner identity missing"
     if (before.get("head"), before.get("diff_sha256")) != (after.get("head"), after.get("diff_sha256")):
         return "FAIL", "runner identity mismatch"
-    if trace.get("candidate_write_events"):
+    if trace.get("candidate_write_events") or trace.get("child_mutation_attempts"):
         return "FAIL", "candidate write observed during frozen review"
-    if trace.get("child_write_capable_attempts"):
-        return "FAIL", "write-capable child tool used during frozen review"
     wanted_roles = expected.get("routing", {}).get("ordered_roles") or expected.get("routing", {}).get("all_of", [])
     selected: dict[str, dict[str, Any]] = {}
     for role in wanted_roles:
@@ -160,6 +174,8 @@ def _identity_status(expected: dict[str, Any], trace: dict[str, Any]) -> tuple[s
         for previous, current in zip(wanted_roles, wanted_roles[1:]):
             if selected[previous]["completed_at"] > selected[current]["started_at"]:
                 return "FAIL", "roles overlapped"
+    if trace.get("child_write_capable_attempts"):
+        return "UNKNOWN", "shell effects unobserved during frozen review"
     return "PASS", "runner identity and completed serial lifecycle matched"
 
 
@@ -172,6 +188,8 @@ def _routing_status(expected: dict[str, Any], trace: dict[str, Any]) -> tuple[st
     if any(role not in roles for role in all_of) or any(role in roles for role in routing.get("none_of", [])):
         return "FAIL", "routing evidence mismatch"
     if all_of and any(role not in all_of for role in roles):
+        return "FAIL", "unexpected role"
+    if "allowed_roles" in routing and any(role not in routing["allowed_roles"] for role in roles):
         return "FAIL", "unexpected role"
     ordered = routing.get("ordered_roles", [])
     if ordered and roles[: len(ordered)] != ordered:
@@ -196,10 +214,12 @@ def grade(case: dict[str, Any], before: dict[str, str], after: dict[str, str], t
         hard_checks.append((routing_status, routing_reason))
     if any(path not in paths for path in expected.get("required_changed_paths", [])) or ("exact_changed_paths" in expected and paths != expected["exact_changed_paths"]) or any(path in paths for path in expected.get("protected_paths", [])):
         hard_checks.append(("FAIL", "write contract mismatch"))
+    if any(after.get(path) != hashlib.sha256(content.encode()).hexdigest() for path, content in expected.get("expected_contents", {}).items()):
+        hard_checks.append(("FAIL", "content contract mismatch"))
     for wanted in expected.get("runner_commands", []):
         if not any(_normalize_command(command.get("command")) == _normalize_command(wanted["command"]) and command.get("exit_code") == wanted["exit_code"] for command in trace.get("runner_checks", [])):
             hard_checks.append(("FAIL", "runner command evidence mismatch"))
-    hard_status, hard_reason = next(((status, reason) for status, reason in hard_checks if status != "PASS"), ("PASS", "hard plumbing matched"))
+    hard_status, hard_reason = next(((status, reason) for priority in ("FAIL", "UNKNOWN") for status, reason in hard_checks if status == priority), ("PASS", "hard plumbing matched"))
     anomalies = [item.get("reason") for item in trace.get("unknown") or [] if item.get("reason")]
     if anomalies:
         result["evidence_anomalies"] = anomalies
@@ -239,8 +259,8 @@ def _runner_checks(work: Path, expected: dict[str, Any], adapter: Any) -> list[d
     return results
 
 
-def _result_row(case: dict[str, Any], before: dict[str, str], snapshot: dict[str, object], started: float, graded: dict[str, Any], runtime: list[dict[str, Any]], tokens: dict[str, int]) -> dict[str, Any]:
-    return {"case": case["id"], "kind": case["kind"], "fixture": case["fixture"], "case_digest": digest(case), "fixture_digest": digest({"kind": case["fixture"], "before": before}), "config_digest": snapshot["hash"], "candidate_hashes": snapshot["hashes"], "actual_child_runtime": runtime, "latency_seconds": round(time.monotonic() - started, 3), "tokens": tokens, "grade": graded}
+def _result_row(case: dict[str, Any], before: dict[str, str], snapshot: dict[str, object], started: float, graded: dict[str, Any], runtime: list[dict[str, Any]], tokens: dict[str, int], reported_cost_usd: float | None = None, parent_runtime: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {"case": case["id"], "kind": case["kind"], "fixture": case["fixture"], "case_digest": digest(case), "fixture_digest": digest({"kind": case["fixture"], "before": before}), "config_digest": snapshot["hash"], "candidate_hashes": snapshot["hashes"], "actual_child_runtime": runtime, "actual_parent_runtime": parent_runtime, "latency_seconds": round(time.monotonic() - started, 3), "tokens": tokens, "reported_cost_usd": reported_cost_usd, "grade": graded}
 
 
 def run_one(case: dict[str, Any], output: Path, dry: bool, model: str, effort: str, timeout: int, snapshot: dict[str, object], adapter: Any, declared: dict[str, dict[str, str]]) -> dict[str, Any]:
@@ -271,7 +291,7 @@ def run_one(case: dict[str, Any], output: Path, dry: bool, model: str, effort: s
             dump(output / "infra.json", infra_diagnostic(rc, stdout, stderr))
         graded = grade({**case, "expected": expected}, before, after, trace, infra, dry, adapter.runtime_contract)
         dump(output / "grade.json", graded)
-        return _result_row(case, before, snapshot, started, graded, trace["native_agents"], trace["tokens"])
+        return _result_row(case, before, snapshot, started, graded, trace["native_agents"], trace["tokens"], trace.get("reported_cost_usd"), trace.get("parent_runtime"))
     except TimeoutError:
         after = files(work)
         state_after = git_state(work, adapter.tools()["git"])
@@ -296,6 +316,11 @@ def usage_totals(results: list[dict[str, Any]]) -> dict[str, Any]:
             if isinstance(value, int):
                 totals[key] += value
         latency += float(row.get("latency_seconds") or 0)
+    costs = [row["reported_cost_usd"] for row in results if isinstance(row.get("reported_cost_usd"), (int, float))]
+    totals["reported_cost_usd"] = round(sum(costs), 8) if costs else None
+    totals["cost_observed_cases"] = len(costs)
+    totals["token_observed_cases"] = sum(bool(row.get("tokens")) for row in results)
+    totals["total_cases"] = len(results)
     totals["latency_seconds"] = round(latency, 3)
     totals["billed_tokens"] = sum(totals[key] for key in BILLED_TOKEN_KEYS)
     return totals
@@ -328,9 +353,11 @@ def factcheck(summary: dict[str, Any]) -> dict[str, Any]:
     policy = observations["policy_routing"]
     policy_statuses = [item["status"] for item in policy]
     manifest_cases = {case["id"]: case for case in load(ROOT / "manifest.json")["cases"]}
-    # Only delegation-expected policy cases (all_of) can confirm guidance-triggered
-    # spawning; a PASS on a none_of case means "correctly did NOT delegate".
-    delegation_statuses = [item["status"] for item in policy if manifest_cases.get(item["case"], {}).get("expected", {}).get("routing", {}).get("all_of")]
+    delegation_statuses = []
+    for item in policy:
+        routing = manifest_cases.get(item["case"], {}).get("expected", {}).get("routing", {})
+        if routing.get("all_of") or (routing.get("allowed_roles") and item["roles"]):
+            delegation_statuses.append(item["status"])
     explicit = bool(observations["explicit_subagent_support"])
     runtime = bool(observations["custom_agent_runtime_overrides"]) and all(r["grade"]["hard_status"] == "PASS" for r in results if r["case"].startswith("plumbing-explicit-"))
     runtime_conflict = any(r["grade"].get("reason") == "runtime contract mismatch" for r in results if r["case"].startswith("plumbing-explicit-"))
@@ -367,6 +394,8 @@ def _report_compare(report: dict[str, Any]) -> str:
     lines = [f"# Codex evaluation comparison: {report['status']}", "", f"Rule: {report['rule']}", f"Confounders: {', '.join(report['confounders']) or 'none'}", "", "| case | hard | behavior | baseline | candidate |", "| --- | --- | --- | --- | --- |"]
     for row in report["cases"]:
         lines.append(f"| {row['case']} | {row['hard_comparison']} | {row['behavioral']} | {row['baseline']['pass']}/{row['baseline']['n']} {row['baseline']['wilson95']} | {row['candidate']['pass']}/{row['candidate']['n']} {row['candidate']['wilson95']} |")
+    if report.get("mode") == "models":
+        lines.extend(["", "Main model experiment (not a general coding benchmark).", "Models: " + json.dumps(report.get("models")), "Observed usage: " + json.dumps(report.get("usage")), "Missing usage is unknown; token counts are not subscription charges or verified monetary savings."])
     return "\n".join(lines) + "\n"
 
 
@@ -394,7 +423,7 @@ def compare(args: argparse.Namespace) -> int:
             Path(args.output_report).write_text(_report_compare(report))
             print(json.dumps(report, ensure_ascii=False))
             return 2
-    report = compare_summaries(baseline, candidate, wilson, args.min_effect)
+    report = compare_summaries(baseline, candidate, wilson, args.min_effect, getattr(args, "mode", "rules"))
     dump(args.output_json, report)
     Path(args.output_report).write_text(_report_compare(report))
     print(json.dumps(report, ensure_ascii=False))
@@ -439,8 +468,8 @@ def promote(args: argparse.Namespace) -> int:
     if target.exists():
         print(json.dumps({"status": "PROMOTION_REFUSED", "reasons": ["baseline_exists"]}))
         return 2
-    baseline = {key: summary.get(key) for key in ("generated_at", "runner_sha256", "manifest_sha256", "repetitions", "metrics", "source_drift", "evidence_root", "config_digest", "candidate_hashes", "suite", "model", "cli_adapter", "cli_version", "executable_sha256", "toolchain_digest", "network_env_digest", "dry_run")}
-    baseline["results"] = [{key: row.get(key) for key in ("case", "kind", "case_digest", "fixture_digest", "grade")} for row in summary.get("results", [])]
+    baseline = {key: summary.get(key) for key in ("generated_at", "runner_sha256", "manifest_sha256", "repetitions", "timeout", "max_input_tokens", "metrics", "source_drift", "evidence_root", "config_digest", "candidate_hashes", "suite", "model", "effort", "adapter", "cli_version", "executable_sha256", "toolchain_digest", "network_env_digest", "dry_run")}
+    baseline["results"] = [{key: row.get(key) for key in ("case", "kind", "case_digest", "fixture_digest", "grade", "actual_parent_runtime")} for row in summary.get("results", [])]
     baseline.update({"manual_promoted": True, "immutable": True, "promoted_from": source.parent.name, "promoted_at": utc()})
     baseline["baseline_digest"] = digest(baseline)
     dump(target, baseline); print(target); return 0
@@ -480,6 +509,7 @@ def run(args: argparse.Namespace) -> int:
         case["expected"].get("routing", {}).get("all_of", []) +
         case["expected"].get("routing", {}).get("none_of", []) +
         case["expected"].get("routing", {}).get("ordered_roles", []) +
+        case["expected"].get("routing", {}).get("allowed_roles", []) +
         [item["role"] for item in case["expected"].get("runtime", [])]
     )}
     missing_roles = sorted(referenced - set(declared))
@@ -515,7 +545,7 @@ def run(args: argparse.Namespace) -> int:
         "budget_stopped": stopped,
     }
     drift = adapter.source_drift(REPO, snapshot)
-    summary = {"generated_at": utc(), "runner_sha256": sha(Path(__file__)), "manifest_sha256": sha(ROOT / "manifest.json"), "repetitions": args.repetitions, "suite": args.suite, "adapter": adapter.name, "model": model, "cli_version": adapter.info["version"], "executable_sha256": adapter.info["sha256"], "toolchain_digest": adapter.info["toolchain_digest"], "network_env_digest": env_provenance(), "dry_run": args.dry_run, "config_digest": snapshot["hash"], "candidate_hashes": snapshot["hashes"], "metrics": metrics, "source_drift": drift, "results": results}
+    summary = {"generated_at": utc(), "runner_sha256": digest({str(path.relative_to(ROOT)): sha(path) for path in [Path(__file__), *sorted((ROOT / "lib").rglob("*.py"))]}), "manifest_sha256": sha(ROOT / "manifest.json"), "repetitions": args.repetitions, "timeout": args.timeout, "max_input_tokens": args.max_input_tokens, "suite": args.suite, "adapter": adapter.name, "model": model, "effort": args.effort, "cli_version": adapter.info["version"], "executable_sha256": adapter.info["sha256"], "toolchain_digest": adapter.info["toolchain_digest"], "network_env_digest": env_provenance(), "dry_run": args.dry_run, "config_digest": snapshot["hash"], "candidate_hashes": snapshot["hashes"], "metrics": metrics, "source_drift": drift, "results": results}
     dump(output / "factcheck.json", factcheck(summary))
     write_summary_attestation(output, summary)
     root = write_evidence_index(output)
@@ -543,6 +573,7 @@ def main() -> int:
     runner.add_argument("--model", default=None, help="main model; defaults to the adapter's")
     runner.add_argument("--effort", default="medium")
     comparator = subs.add_parser("compare")
+    comparator.add_argument("--mode", choices=["rules", "models"], default="rules", help="models compares main models while requiring unchanged role configuration and infrastructure")
     comparator.add_argument("--baseline", required=True)
     comparator.add_argument("--candidate", required=True)
     comparator.add_argument("--min-effect", type=float, default=0.2)

@@ -53,7 +53,7 @@ class EvalAdapter:
     def tools(self) -> dict[str, str]:
         return self.info.get("tools", {}) if self.info else {}
 
-    def runtime_contract(self, declared: dict[str, str], actual: dict[str, Any]) -> bool:
+    def runtime_contract(self, declared: dict[str, str], actual: dict[str, Any]) -> bool | None:
         """Whether observed runtime (model/effort/sandbox_policy) satisfies the declared contract.
 
         The base contract is exact equality; adapters whose CLI lets the model

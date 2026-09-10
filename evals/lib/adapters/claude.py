@@ -14,10 +14,9 @@ Evidence model (probe-verified on claude 2.1.223):
 
 Isolation is cwd-based: the candidate CLAUDE.md is copied into the
 fixture work dir (discovered as a project instruction) and agent
-profiles into `<work>/.claude/agents/`. Claude Code does not enforce a
-profile's declared model (the user's environment model wins), has no
-sandbox concept, and transcripts do not persist the injected CLAUDE.md:
-runtime and injection are recorded as observations, never asserted.
+profiles into `<work>/.claude/agents/`. Model aliases can resolve differently
+by provider or invocation. Transcripts do not establish the effective effort
+or permission policy, so missing runtime evidence remains unobserved.
 """
 from __future__ import annotations
 
@@ -28,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from ..common import frontmatter
-from ..evidence import _safe, usage_values
+from ..evidence import _safe, reported_cost, usage_values
 from ..runtime import run_process
 from .base import EvalAdapter
 
@@ -55,12 +54,23 @@ class ClaudeAdapter(EvalAdapter):
         super().__init__()
         self.session_id: str | None = None
 
-    def runtime_contract(self, declared: dict[str, str], actual: dict[str, Any]) -> bool:
-        # Claude Code does not enforce an agent profile's declared model (the user's
-        # environment model wins, as probe-verified), and has no sandbox concept nor
-        # effort observation. Runtime is recorded as observation only, never asserted:
-        # declared values are aspirational, not contractual, on this platform.
-        return True
+    def runtime_contract(self, declared: dict[str, str], actual: dict[str, Any]) -> bool | None:
+        model = actual.get("model")
+        requested = declared["model"]
+        aliases = {"opus": "claude-opus-", "sonnet": "claude-sonnet-", "haiku": "claude-haiku-", "fable": "claude-fable-"}
+        if not model or requested == "inherit":
+            return None
+        if requested in aliases:
+            if not str(model).startswith(aliases[requested]):
+                return False
+        elif model != requested:
+            return False
+        if declared.get("effort") not in {None, "unobserved"}:
+            if actual.get("effort") in {None, "unobserved"}:
+                return None
+            if declared["effort"] != actual["effort"]:
+                return False
+        return None
 
     # -- candidate -------------------------------------------------------
     def candidate_paths(self, repo: Path) -> list[Path]:
@@ -89,7 +99,7 @@ class ClaudeAdapter(EvalAdapter):
             # contract is not asserted for claude, so an absent mode stays "unobserved".
             permission_mode = data.get("permission_mode", "")
             sandbox_type = "read-only" if permission_mode == "plan" else ("workspace-write" if permission_mode == "default" else "unobserved")
-            declared[role] = {"model": data["model"], "effort": "unobserved", "sandbox_type": sandbox_type}
+            declared[role] = {"model": data["model"], "effort": data.get("effort", "unobserved"), "sandbox_type": sandbox_type}
         if not declared:
             raise RuntimeError("candidate snapshot must declare at least one custom agent profile")
         return declared
@@ -102,7 +112,7 @@ class ClaudeAdapter(EvalAdapter):
         self._inject_cwd_instructions(work, snapshot, "CLAUDE.md", ".claude/agents")
 
     def invocation(self, work: Path, prompt: str, model: str, effort: str) -> list[str]:
-        argv = [self.info["binary"], "-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits"]
+        argv = [self.info["binary"], "-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--effort", effort]
         if model:
             argv += ["--model", model]
         return argv
@@ -127,7 +137,7 @@ class ClaudeAdapter(EvalAdapter):
             typ = event.get("type")
             if typ == "result":
                 self.session_id = event.get("session_id")
-                record = {"type": "turn.completed", "session_id": event.get("session_id"), "usage": usage_values(event.get("usage"))}
+                record = {"type": "turn.completed", "session_id": event.get("session_id"), "usage": usage_values(event.get("usage")), "reported_cost_usd": reported_cost(event.get("total_cost_usd"))}
                 lines.append(json.dumps(record, ensure_ascii=False))
             elif typ == "assistant":
                 for block in event.get("message", {}).get("content", []):
@@ -200,6 +210,7 @@ class ClaudeAdapter(EvalAdapter):
     def _session_records(self, path: Path, sid: str, role: str | None, capability: str | None) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
         model = None
+        observed_models = set()
         started_at = completed_at = None
         for line_number, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
             try:
@@ -210,6 +221,8 @@ class ClaudeAdapter(EvalAdapter):
             typ = event.get("type")
             if typ == "assistant":
                 message = event.get("message", {})
+                if message.get("model"):
+                    observed_models.add(message["model"])
                 if model is None:
                     model = message.get("model")
                 if started_at is None:
@@ -220,6 +233,8 @@ class ClaudeAdapter(EvalAdapter):
                         name = block.get("name")
                         if name in WRITE_TOOLS:
                             records.append({"type": "session_write_attempt", "tool": name})
+                        elif name == "Bash":
+                            records.append({"type": "response_item", "item_type": "function_call", "name": "exec"})
                         elif name == "Agent":
                             args = block.get("input") or {}
                             records.append({"type": "response_item", "item_type": "custom_tool_call", "name": "Agent", "call_id": block.get("id"), "arguments": {"subagent_type": args.get("subagent_type") if isinstance(args, dict) else None}})
@@ -234,7 +249,7 @@ class ClaudeAdapter(EvalAdapter):
         records.insert(0, {"type": "session_meta", "session_id": sid, "thread_id": None, "agent_role": role, "started_at": None})
         # effort/sandbox are unobservable in Claude Code evidence (permission system,
         # not a sandbox): recorded as explicit "unobserved" markers, never asserted.
-        records.insert(1, {"type": "turn_context", "model": model, "effort": "unobserved", "sandbox_policy": {"type": "unobserved"}})
+        records.insert(1, {"type": "turn_context", "model": model, "observed_models": sorted(observed_models), "effort": "unobserved", "sandbox_policy": {"type": "unobserved"}})
         if started_at:
             records.append({"type": "session_lifecycle", "phase": "task_started", "outcome": "started", "started_at": started_at, "completed_at": None})
             if completed_at:

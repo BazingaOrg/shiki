@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .common import ROLES
+from .evidence import reported_cost
 
 # Evidence-record types written by lib/evidence.py. Anything else is unknown.
 SESSION_TYPES = {"session_meta", "turn_context", "response_item", "session_lifecycle", "session_write_attempt", "evidence_anomaly"}
@@ -16,10 +17,13 @@ def normalize_trace(paths: list[Path], events: Path | None = None) -> dict[str, 
     unknown: list[dict[str, Any]] = []
     undeclared: list[dict[str, Any]] = []
     tokens: dict[str, int] = {}
+    cost_usd = None
     parent: dict[str, Any] | None = None
     child_write_capable_attempts = 0
+    child_mutation_attempts = 0
 
     for path in paths:
+        observed_models = set()
         session: dict[str, Any] = {"file": path.name, "role": None, "session_id": None, "thread_id": None, "started_at": None, "completed_at": None, "outcome": None, "runtime": None, "is_child": None}
         for line_number, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
             try:
@@ -39,7 +43,7 @@ def normalize_trace(paths: list[Path], events: Path | None = None) -> dict[str, 
                 continue
             if typ == "session_write_attempt":
                 if session.get("role"):
-                    child_write_capable_attempts += 1
+                    child_mutation_attempts += 1
                 continue
             if typ == "session_lifecycle":
                 if event.get("phase") == "task_started":
@@ -63,11 +67,16 @@ def normalize_trace(paths: list[Path], events: Path | None = None) -> dict[str, 
             elif typ == "turn_context":
                 if not {"model", "effort", "sandbox_policy"} <= set(event):
                     unknown.append({"file": path.name, "line": line_number, "reason": "unknown-turn-context"})
+                observed_models.update(model for model in event.get("observed_models", []) if isinstance(model, str))
+                if isinstance(event.get("model"), str):
+                    observed_models.add(event["model"])
                 session["runtime"] = {"model": event.get("model"), "effort": event.get("effort"), "sandbox_policy": event.get("sandbox_policy")}
             elif typ == "response_item":
                 # A write-capable tool call by a child agent is observed, never a hard pass.
                 if event.get("name") == "exec" and session.get("role"):
                     child_write_capable_attempts += 1
+        if len(observed_models) > 1 and session["runtime"]:
+            session["runtime"]["observed_models"] = sorted(observed_models)
         sessions.append(session)
 
     exec_completed = False
@@ -87,6 +96,7 @@ def normalize_trace(paths: list[Path], events: Path | None = None) -> dict[str, 
                 continue
             if event.get("type") == "turn.completed":
                 exec_completed = True
+                cost_usd = reported_cost(event.get("reported_cost_usd"))
                 if isinstance(event.get("usage"), dict):
                     tokens.update({key: value for key, value in event["usage"].items() if isinstance(value, int)})
             item = event.get("item") if isinstance(event.get("item"), dict) else {}
@@ -109,10 +119,13 @@ def normalize_trace(paths: list[Path], events: Path | None = None) -> dict[str, 
     agents = [session for session in sessions if session["role"]]
     agents.sort(key=lambda item: (item["started_at"] is None, item["started_at"] or "", item["file"]))
     return {
+        "parent_runtime": parent.get("runtime") if parent else None,
         "native_agents": [{key: item[key] for key in ("role", "session_id", "thread_id", "started_at", "completed_at", "outcome", "runtime", "file")} for item in agents],
         "candidate_write_events": candidate_write_events,
         "child_write_capable_attempts": child_write_capable_attempts,
+        "child_mutation_attempts": child_mutation_attempts,
         "tokens": tokens,
+        "reported_cost_usd": cost_usd,
         "unknown": unknown,
         "undeclared": undeclared,
         "health": {"ok": not health_missing, "missing": health_missing},

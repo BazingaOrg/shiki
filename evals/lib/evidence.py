@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -83,6 +84,12 @@ def usage_values(value: Any) -> dict[str, int]:
     if not isinstance(value, dict):
         return {}
     return {str(key): item for key, item in value.items() if isinstance(item, int)}
+
+
+def reported_cost(value: Any) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0:
+        return float(value)
+    return None
 
 
 def _session_record(event: dict[str, Any], patterns: set[str]) -> dict[str, Any] | None:
@@ -204,11 +211,11 @@ EXCLUDED_ROOT_NAMES = {"evidence-index.json", "summary.json", "report.md"}
 
 
 def summary_core(summary: dict[str, Any]) -> dict[str, Any]:
-    result_keys = ("case", "kind", "fixture", "case_digest", "fixture_digest", "config_digest", "grade")
+    result_keys = ("case", "kind", "fixture", "case_digest", "fixture_digest", "config_digest", "grade", "actual_parent_runtime")
     return {
         key: summary.get(key)
         for key in (
-            "runner_sha256", "manifest_sha256", "repetitions", "suite", "adapter", "model",
+            "runner_sha256", "manifest_sha256", "repetitions", "timeout", "max_input_tokens", "suite", "adapter", "model", "effort",
             "cli_version", "executable_sha256", "toolchain_digest", "network_env_digest",
             "dry_run", "config_digest", "candidate_hashes", "metrics", "source_drift",
         )

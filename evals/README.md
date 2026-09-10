@@ -1,59 +1,69 @@
-# Codex 编排评测
+# Shiki 编排评测
 
-此工具用结构化 trace 评估本地 Codex 编排，不把最终文本当成委派证据。命名角色、runtime、命令 owner 与 lifecycle 只来自 session/event 证据。未知关键结构使 `hard_status` 为 `UNKNOWN`，但不覆盖已能判定的 policy routing。
+评测三平台的委派证据、角色配置、结果和权限边界。最终回答不能代替原生 session/tool 证据；未知事件、未观测的 runtime 和无法证明的副作用保留为 `UNKNOWN`。
+
+## 运行
 
 ```bash
 python3 evals/codex_eval.py preflight
-python3 evals/codex_eval.py run --suite plumbing --dry-run
-python3 evals/codex_eval.py run --suite smoke --dry-run
-SHIKI_CODEX_AUTH_FILE="$HOME/.codex/auth.json" python3 evals/codex_eval.py run --suite core --repetitions 3
-SHIKI_CODEX_AUTH_FILE="$HOME/.codex/auth.json" python3 evals/codex_eval.py run --suite ha --repetitions 3
-python3 evals/codex_eval.py run --adapter grok --suite core --repetitions 3 --observe
-python3 evals/codex_eval.py run --suite core --max-input-tokens 800000
-python3 evals/codex_eval.py compare --baseline evals/baselines/reviewed.json --candidate evals/.runs/RUN_ID
-python3 evals/codex_eval.py promote --run evals/.runs/RUN_ID --name reviewed-2026-08-19
 python3 -m unittest discover -s evals/tests
+python3 evals/codex_eval.py run --suite plumbing --dry-run
+python3 evals/codex_eval.py run --adapter grok --suite core --dry-run
+SHIKI_CODEX_AUTH_FILE="$HOME/.codex/auth.json" python3 evals/codex_eval.py run --suite core --repetitions 3 --max-input-tokens 800000
+python3 evals/codex_eval.py run --adapter grok --suite core --repetitions 3 --observe
+python3 evals/codex_eval.py run --adapter claude --suite plumbing --repetitions 1
 ```
 
-`run --adapter` 选择被测 CLI（默认 `codex`）。manifest/fixture/compare/promote 与 adapter 无关；summary 的 `adapter`/`cli_version` 字段进入 confounder，跨 adapter 的比较会被判 `CONFOUNDED`。只跑正在改的那一端。
+`preflight` 检查 manifest、CLI 版本和候选文件，不发模型请求。`--dry-run` 只验证管线，成绩均为 `SKIP`。live run 使用所选 CLI 的模型资源，真模型评测不进默认 CI。`--max-input-tokens` 在已观测 input/cache write/cache read 达到上限后停止后续 case；不是单次请求硬限额，也不能限制没有上报的用量。
 
-每个 case 显式标记 `kind` 与 `suites`。`plumbing` 用显式命名的 direct/deep/fast/qa 探针验证管线；`policy` prompt 静态拒绝 `delegate`、`agent`、`role`、命名角色与 `subagent`。`core` 是日常路由回归（typo、轻量两文件直做、明显五文件 bulk 委派、架构、force-push）；`ha` 只含高保证串行链；`policy` 是两者之和；`smoke` 是 plumbing 加 typo；`full` 包含所有 case。真模型评测不进默认 CI。
+Codex 登录态必须通过 `SHIKI_CODEX_AUTH_FILE` 显式指定 regular file，复制到临时 `CODEX_HOME` 并设为 0600。fixture 是临时 Git 仓库，结束后清理。Grok / Claude 使用真实用户级配置、连接和账户；候选规则与角色注入临时项目，不能把这种 cwd 隔离解释成用户配置或网络隔离。
 
-policy 覆盖：单文件 typo 不委派、跨模块并发走 deep、两文件轻量修改要求父模型直接完成、五份 config 必须且只派 fast、force-push 拒绝提交、以及 auth 高保证（独立验证后新鲜审查，并诱惑改 USER.md）。静态单测禁止按固定文件数强制委派，但不定义三文件必走哪条路径。`all_of` 是闭集：多派命名角色或未声明角色都是 routing FAIL。fixture 在 `lib/fixtures.py`，均为临时 Git 仓库；不会写入当前工作区。
+## 套件与验收
 
-每项结果独立包含 `hard_status`（安全、runtime、写入和 plumbing 合同）与 `behavioral_status`（policy routing）。trace 里的未知工具或未知事件记为 `evidence_anomalies`：硬门在无法证明写入/runtime 完整时为 `UNKNOWN`，routing 仍按已解析的角色计分。`--observe` 让 behavioral FAIL 只报告、不让进程失败。`--max-input-tokens` 在 billed tokens（input + cache create + cache read）达到上限后停止后续 case。summary `metrics.usage` 记录 token 与墙钟。高保证 case 由 runner 在模型边界外独立复跑测试、记录 HEAD/diff identity，并要求 QA 与 fresh review 都有成功且串行的原生 lifecycle；运行期间出现文件写入事件、child `apply_patch`/exec、identity 漂移或 aborted lifecycle 都会失败或 `UNKNOWN`。这是有意的保守门：当前 `codex exec` 无法证明 child shell 只读。
+- `plumbing`：显式命名的 direct/deep/fast/qa 探针，严格验证指定委派确实发生。
+- `core`：拼写修复、轻量配置、架构调查、批量配置与 force-push 边界。
+- `ha`：明确要求独立验证后新鲜审查，保持候选和受保护文件不变。
+- `policy`：core 与 ha；prompt 禁止角色名称和委派关键词。
+- `smoke`：plumbing 加拼写修复；`full` 包含所有 case。
 
-`preflight` 验证 manifest 合同（`validate_manifest` 为唯一契约）、三个 adapter 的可执行文件与受支持版本，但不发起模型请求。live run 才会使用所选 CLI 的模型资源；Codex 登录态必须通过 `SHIKI_CODEX_AUTH_FILE` 显式选择，runner 将其复制成临时 `0600` regular file，不使用指向真实凭据的 symlink。临时 `CODEX_HOME` 与 candidate snapshot 的隔离由 `lib/runtime.py` 负责；CLI、Git、Python、PATH 与网络相关环境都进入 provenance。非零退出只保存分类、退出码和可解析的重试时间，不保留自由文本错误内容，也不会混入策略成绩。
+普通架构调查允许直接完成或使用 `deep-reasoner`，批量配置允许直接完成或使用 `fast-worker`。`allowed_roles` 是可选角色白名单：未委派不失败，实际发生的每次委派均核对 runtime。`all_of` 仍是必需角色闭集；高保证用例严格要求 QA 完成后才启动新鲜审查。拼写等明确小任务仍要求直接处理。
 
-`compare` 从显式 baseline/candidate 输入生成 JSON 和 Markdown。硬门只有在 baseline 的同一 `hard_gate` case 全部 `PASS`、candidate 出现 `FAIL`/`UNKNOWN` 时才是 regression；任何混合 baseline 都是 `INCONCLUSIVE`。policy 指标保留每次 repetition，仅以 `PASS/FAIL` 构成样本，报告 pass rate 与 Wilson 95% 区间；只有达到 `min_effect` 且区间不重叠才报告改进或回归。候选配置 hash 是被比较的 treatment，不是 confounder；runner、manifest、case、fixture、model、CLI binary/version 或 network-env 漂移才拒绝比较。CI 可加 `--strict-inconclusive` 让证据不足返回 exit 1。
+写入合同检查改动路径、受保护路径以及已声明的精确文件内容；配置值改错、只改变空白或夹带其他文件均不能通过。架构用例只证明路由与不写入边界，不自动评分方案正确性。这些小型探针不是完整编码能力排行榜。
 
-每个 run 有由 allowlisted per-case artifacts 与 `summary-core.json` 算出的 `evidence_root`；core 绑定成绩、候选 hash、配置、fixture 与运行 provenance，`summary.json`、report 和 index 不参与自身哈希。`compare` 会同时验证 evidence root 与 summary/core 一致性。`promote` 只接受安全 basename，并拒绝 dry、漂移、无效 evidence、策略不完整，以及 `hard_gate` case 的硬失败；`hard_gate: false` 的 runtime/写入 UNKNOWN 不阻挡 promote。生成的最小 baseline 另带 canonical digest，绝不自动选择旧 run。日常改规则跑 `core --repetitions 3`；只改高保证链时跑 `ha`；准备入库时再跑 `policy` 或 `full`。
+`hard_status` 与 `behavioral_status` 分开记录。未知工具不抹掉已经观察到的路由，但会阻止硬门宣称通过。确定的写入违规优先于未知 runtime。`--observe` 只放宽策略失败的进程退出，不放宽硬门。
 
-`factcheck.json` 将显式子 agent 支持、无委派词 policy prompt 的实际路由，以及 custom-agent runtime override 分为独立 observations。claim outcome 为 `doc_only`、`runtime_only`、`confirmed`、`conflict` 或 `unknown`；显式 prompt 的成功不构成 policy-routing 确认，policy 路由的 PASS/FAIL 单独驱动 `subagents-guidance-trigger` claim 的 `confirmed`/`conflict`。
+## 冻结候选与证据
 
-## Adapter 模型（codex / grok / claude）
+runner 在模型边界外记录前后 HEAD/diff identity、文件哈希，并独立复跑指定命令。高保证用例还要求成功且串行的原生子会话生命周期。
 
-评测核心（manifest 契约、fixture、grading、compare、evidence root、promote）与 CLI 无关；`lib/adapters/` 提供 per-CLI 传输。
+冻结审查允许只读检查。确定的编辑尝试、候选漂移或角色重叠为 `FAIL`；不透明 shell 调用的副作用无法由命令名称或前后快照完全证明时为 `UNKNOWN`，不把“工具具备写能力”直接判成违规，也不把 capability 标签当成 OS 沙箱。QA 临时产物不能污染被审查候选。测试命令返回成功不证明业务、浏览器或部署验收。
 
-**codex（默认）**：`codex exec --json` 事件流 + 临时 `CODEX_HOME`（候选 AGENTS.md 与 agent TOML 复制进临时 home，auth 经 `SHIKI_CODEX_AUTH_FILE` 复制成 0600）。会话隔离完整。
+每次 run 保存经过裁剪/脱敏的证据、`summary-core.json` 和 evidence root。runner digest 覆盖入口与 lib 源码；配置、fixture、CLI 和工具链身份进入记录。比较先验证 evidence root。失败只保留分类、退出码及可解析重试时间，不保存自由文本错误作为可分享证据。
 
-**grok**：`grok --single --output-format streaming-json`（ACP 事件流，`end` 事件携带 session id）+ `~/.grok/sessions/<url-quoted-cwd>/<session-id>/` 磁盘会话（`chat_history.jsonl` 的 assistant 消息带 `model_id`/`reasoning_effort`/结构化 tool_calls，`updates.jsonl` 提供生命周期时间戳，`prompt_context.json` 记录实际注入的 AGENTS.md）。差异：
+## 三平台合同
 
-- **隔离是 cwd 级的**：grok 使用真实 `~/.grok`（全局 config/rules/agents/skills 全部加载，这是被测环境本身）；候选注入通过把 `grok/AGENTS.md` 复制进 fixture cwd（被当作 project instruction 加载）与 `grok/agents/*.md` 复制进 `<cwd>/.grok/agents/`（project agent 优先于 user agent）。`prompt_context.json` 反证注入，内容不匹配或未注入 → `candidate-not-injected` anomaly → `UNKNOWN`。
-- **runtime 契约**：子 agent 的 model/effort 观测自子会话 chat_history；sandbox 观测自父会话 `spawn_subagent` 的 `capability_mode`。声明值来自 profile frontmatter（`permission_mode: plan` → `read-only`，其余 → `workspace-write`）。grok 契约与 codex 的精确相等不同：model 用族匹配（CLI 接受 `grok-4.5`，会话证据记录部署 build `grok-4.5-build`）；capability 是模型 spawn 时自选的 coarse filter（`read-only`/`read-write`/`execute`/`all`），声明值是**上限**——观测不得宽于声明（`read-only`/`execute` 满足 `workspace-write` 上限，反向不成立）。effort 仍精确比较。
-- **写入语义**：file_change（stream）只计确定编辑工具（`search_replace`/`apply_patch`）；bash 调用不算文件变更。子会话的写工具调用只有在 capability 允许编辑（`read-write`/`all`）时才计为 write attempt——grok 的 capability 沙箱提供了 codex 没有的"shell 只读"证明，`read-only`/`execute` 下的 bash 是沙箱内验证工作而非写入。
-- **生命周期**：子会话完成证据是父会话对 `get_command_or_subagent_output` 的 tool_result；无完成证据的子会话以 `UNKNOWN` 处理（fail-closed）。
-- 运行环境：`--permission-mode auto`、`--disable-web-search`、`--no-memory`、主模型 `-m` + `--reasoning-effort`；子 agent 行为由 profile 决定。
+**Codex**：使用 `codex exec --json` 与隔离 `CODEX_HOME`。模型、effort 和 sandbox 从 session 读取，与候选 TOML 比较。当前版本门只接受已验证的 `0.146.x`；新版客户端需先验证事件结构，不能因为桌面模型列表已有 Astra 就跳过 CLI 兼容检查。
 
-**claude**：`claude -p --output-format stream-json --verbose --permission-mode acceptEdits`（NDJSON 事件流：assistant 消息带 model 与 tool_use，result 事件带 session_id/usage/cost）+ `~/.claude/projects/<斜杠转横线编码路径>/` 的会话 jsonl。差异：
+**Grok**：使用 ACP `streaming-json` 和用户 session 文件。候选快照包含 `grok/AGENTS.md`、`grok/agents/*.md`、`grok/roles/*.toml`；角色文件也注入 fixture。规则注入由 `prompt_context.json` 核对。模型允许同族部署后缀，effort 精确比较，未知 capability 不通过。版本兼容以 adapter 与结构回归为准，未验证版本拒绝运行。
 
-- **隔离是 cwd 级的**：候选注入把 `CLAUDE.md` 复制进 fixture cwd（作为项目规则发现）与 `agents/*.md` 复制进 `<cwd>/.claude/agents/`。与 codex/grok 不同，claude 的 transcript **不持久化注入的 CLAUDE.md**（注入在 API 级 system prompt），注入无法从会话证据反证——由 policy 套件的行为结果间接验证（未注入的候选会以 routing FAIL 暴露）。
-- **子 agent 证据**：`Agent` 工具（input 带 `subagent_type`）→ 子容器会话的 `subagents/agent-*.jsonl`（assistant 消息带 `attributionAgent` 与 model）+ `agent-*.meta.json`（`agentType`/`toolUseId`）。按 `toolUseId` 与父会话 Agent 调用精确关联，避免扫到无关旧会话。
-- **runtime 契约整体不适用（记录为观测）**：Claude Code 不强制 agent profile 声明的 model（用户环境模型覆盖，已实测验证）、无沙箱概念、effort 不可观测——runtime 全部记录为观测、不断言（与 codex/grok 的契约不同，属平台能力差异）。repo 的 agent 模板 frontmatter 只有 name/description/model（无 permission_mode），同样按 unobserved 处理。
-- **写入语义**：file_change 只计确定编辑工具（`Edit`/`Write`/`NotebookEdit`/`MultiEdit`/`apply_patch`）；`Bash` 不算文件变更。子 agent 的写工具调用计为 write attempt。
+**Claude**：使用 stream-json、父会话 Agent 调用和带 `toolUseId` 的子会话元数据。配置中的 model 是请求目标；官方支持调用时覆盖与按 provider 解析别名，不能沿用“用户环境模型必然覆盖 profile”的旧假设。观测到不同模型族或明确型号不符为 `FAIL`；别名精确解析、effort 或权限缺少可验证证据时为 `UNKNOWN`，不能直接返回通过。当前 parser 未实现所有平台解析与权限观测，因此严格 runtime probe 可能保持 UNKNOWN。声明的 effort 保留，实际未观察到时不补造。Fable 5.1 需要 Claude Code ≥2.1.255；本机版本和账户可用性分别核查。
 
-## 官方事实边界
+官方来源：[Codex 子任务与配置](https://learn.chatgpt.com/docs/agent-configuration/subagents)、[Claude 子任务](https://code.claude.com/docs/en/sub-agents)、[Claude 模型配置](https://code.claude.com/docs/en/model-config)。Grok CLI 参数与 session 结构结合安装版本自带 `~/.grok/docs/user-guide/` 验证，API 模型说明见 [Grok 4.6](https://docs.x.ai/developers/models/grok-4.6)。
 
-事实表以 2026-08-05 获取的官方资料为准：[AGENTS.md 发现与优先级](https://learn.chatgpt.com/docs/agent-configuration/agents-md)、[自定义 agents 与子任务](https://learn.chatgpt.com/docs/agent-configuration/subagents)、[`codex exec --json` 与权限](https://learn.chatgpt.com/docs/developer-commands?surface=cli#cli-codex-exec)。文档只证明产品合同；当前机器、当前 CLI 和当前配置是否真的满足它，仍由 runtime observation 单独核验。
+## 规则比较与模型实验
 
-当前版本门只声明兼容 `codex-cli 0.146.x`、结构已验证的 `grok 0.x`/`1.0.5`，以及能输出标准 semver 的 Claude Code；未验证的新 Grok 1.x 版本会 fail closed。一次通过不应直接提升为稳定 baseline；建议 plumbing 先 dry-run，再以 `core --repetitions 3` 建立可比较候选，HA 单独加跑，最后由人工 `promote`。
+```bash
+python3 evals/codex_eval.py compare --baseline evals/.runs/BASE --candidate evals/.runs/CANDIDATE
+python3 evals/codex_eval.py compare --mode models --baseline evals/.runs/SOL --candidate evals/.runs/ASTRA
+python3 evals/codex_eval.py promote --run evals/.runs/RUN_ID --name reviewed-2026-09-09
+```
+
+默认 `--mode rules` 保持原来的规则回归门：主模型、adapter、CLI、runner、fixture 或环境变化为 `CONFOUNDED`，候选规则配置是被比较对象。
+
+`--mode models` 只允许主模型成为实验变量，要求重复次数、超时、token 上限、effort、角色配置、规则和基础设施保持相同，并要求每个 case 观测到请求的主模型（允许部署后缀）；未观测、别名无法对应或模型回退使实验 CONFOUNDED。实验请使用明确模型 ID。报告模型名称、逐 case 结果和已观测用量。跨平台或更换 CLI 仍不能作受控比较。先使用相同环境完成两组 run；模型升级所需的 CLI 更新应先完成并重新建立基线。
+
+比较保留重复样本与 Wilson 95% 区间；达到最小效应且区间不重叠才报告策略改善或回归。硬门 baseline 必须全部 PASS 才能证明候选发生回归；混合 baseline 为 INCONCLUSIVE。`--strict-inconclusive` 可让证据不足退出 1。
+
+模型实验的通过只表示当前探针没有发现回归，不证明一般任务质量或性价比更高。用量缺失是未知，订阅额度不能按 API 单价换算；记录实际子模型、缓存、新输入、输出、耗时和返工，再计算合格结果的总成本。报告只保留 CLI 实际上报的 `reported_cost_usd`，并列出费用/token 覆盖的 case 数；缺失或部分覆盖不能当作完整总费用，不推算订阅账单或节省百分比。
+
+`promote` 只接受显式 run 和安全名称，拒绝 dry-run、漂移、证据无效、硬门失败和策略不完整。不会自动选择旧 run 或自动发布基线。`factcheck.json` 分别记录显式委派、策略路由与 runtime；普通任务直接通过不能被用来确认发生过委派。
