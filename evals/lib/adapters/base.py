@@ -18,11 +18,15 @@ from typing import Any
 from ..common import digest, sha
 
 
-def exact_runtime(declared: dict[str, str], actual: dict[str, Any]) -> bool:
+def exact_runtime(declared: dict[str, str], actual: dict[str, Any]) -> bool | None:
     """Exact-equality runtime contract; codex's sandbox is enforced by the CLI."""
     sandbox = actual.get("sandbox_policy")
     sandbox_type = sandbox.get("type") if isinstance(sandbox, dict) else sandbox
-    return actual.get("model") == declared["model"] and actual.get("effort") == declared["effort"] and sandbox_type == declared["sandbox_type"]
+    if actual.get("effort") != declared["effort"] or sandbox_type != declared["sandbox_type"]:
+        return False
+    if declared["model"] == "inherit":
+        return None
+    return actual.get("model") == declared["model"]
 
 
 class EvalAdapter:

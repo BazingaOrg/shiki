@@ -4,16 +4,14 @@
 
 ## 模型与职责
 
-| 角色 | 模型 | effort | 默认 sandbox |
+| 角色 | 模型 | effort | 职责 |
 | --- | --- | --- | --- |
-| 主模型 | 当前会话选择；日常可用 Sol，困难任务考虑 Astra | 按任务选择 | 当前会话配置 |
-| deep-reasoner | gpt-5.6-sol | high | read-only |
-| fast-worker | gpt-5.6-terra | medium | workspace-write |
-| qa-runner | gpt-5.6-luna | low | workspace-write |
+| 主模型 | 用户选择 | 当前会话 | 判断与整合 |
+| deep-reasoner | 默认继承 | high | 只读调查或独立审查 |
+| fast-worker | 默认继承 | medium | 有界机械实施 |
+| qa-runner | 默认继承 | low | 运行指定检查，不修源码 |
 
-Sol 负责有界复杂推理，Terra 负责已明确的实施，Luna 运行指定检查并报告结果。测试方案设计、覆盖率判断和根因分析不交给 qa-runner。需要独立审查时使用新鲜上下文，不能以主模型自审代替。
-
-Astra 是困难任务的升级选项，不自动替换所有 worker。可以让已选择 Astra 的主模型直接处理疑难问题；当前 deep-reasoner 配置固定 Sol。模型能力与账户可用性分开确认，API 单价不能直接换算订阅额度。
+角色 TOML 省略 `model`，保留职责和推理强度。轻量角色不表示必须使用较弱模型。测试设计与覆盖判断由主模型负责；独立审查使用全新上下文。
 
 ## 安装
 
@@ -31,11 +29,11 @@ cp -i codex/AGENTS.md ~/.codex/AGENTS.md
 
 ## 配置与优先级
 
-每个 TOML 必须声明 `name`、`description`、`developer_instructions`；本项目还显式设置 model、effort 与 sandbox。完整定义直接见 [codex/agents](./codex/agents/)，避免文档中的重复配置与文件漂移。
+每个 TOML 必须声明 `name`、`description`、`developer_instructions`；本项目保留 effort 与 sandbox 字段，省略 model。完整定义直接见 [codex/agents](./codex/agents/)，避免文档中的重复配置与文件漂移。
 
-当前官方模型与 effort 解析规则：先取 spawn 显式值，再取 `[agents]` 默认，再取父会话；随后自定义角色文件中显式设置的字段具有优先级。因此不能只在 spawn 时要求 Astra，就假定覆盖了 deep-reasoner 文件里的 Sol。切换固定角色模型需调整角色配置并核验新会话。
+模型解析先取显式 spawn 值，再取 `[agents]` 默认，再取父会话；自定义角色文件中的显式模型设置会覆盖该选择。本模板不固定模型；若希望跟随主会话，也须检查全局默认和调用参数。不要把省略字段当作已观测到继承。
 
-未指定的其他配置通常继承父会话。沙箱存在独立的运行时覆盖规则：父会话的 `/permissions`、`--yolo` 等 live overrides 可以重新应用到子会话。`read-only` 是配置意图，不是无条件的物理保证；以实际子会话权限为准。QA 的 workspace-write 用于测试产物，禁止修源码仍是职责约束。
+当前官方文档说明子 Agent 继承父会话权限，自定义角色不能建立独立沙箱。模板 sandbox 字段保留给旧版本评测合同；不要据此声称当前客户端强制只读。QA 不改源码、审查不改候选属于职责约束；实际权限须核验。
 
 ## 并发与成本
 

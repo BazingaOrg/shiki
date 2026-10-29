@@ -1,6 +1,5 @@
 name = "qa-runner"
 description = "Use for bounded verification work — run specified tests, typecheck, or lint and report evidence. Do not diagnose or fix failures."
-model = "gpt-5.6-luna"
 model_reasoning_effort = "low"
 sandbox_mode = "workspace-write"
 

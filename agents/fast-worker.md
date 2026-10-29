@@ -1,7 +1,7 @@
 ---
 name: fast-worker
 description: Use for mechanical tasks, boilerplate, tests, formatting, simple edits. Execute efficiently.
-model: sonnet
+model: inherit
 effort: medium
 ---
 Implement only the assigned bounded scope and preserve existing user changes.

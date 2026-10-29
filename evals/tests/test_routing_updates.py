@@ -221,3 +221,45 @@ class RoutingUpdateTests(unittest.TestCase):
         core = summary_core(summary)
         for field in ("repetitions", "timeout", "max_input_tokens"):
             self.assertEqual(core[field], summary[field])
+
+
+class ModelInheritanceTests(unittest.TestCase):
+    def test_all_candidates_declare_inheritance(self):
+        import tempfile
+        from pathlib import Path
+        from lib.adapters import CodexAdapter
+        for adapter in (CodexAdapter(), ClaudeAdapter(), GrokAdapter()):
+            with tempfile.TemporaryDirectory() as directory:
+                snapshot = adapter.snapshot(M.REPO, Path(directory))
+                declared = adapter.declared_runtime(Path(snapshot['path']))
+                self.assertEqual(set(declared), {'deep-reasoner', 'fast-worker', 'qa-runner'})
+                self.assertTrue(all(row['model'] == 'inherit' for row in declared.values()))
+
+    def test_inheritance_does_not_claim_runtime_proof(self):
+        from lib.adapters import CodexAdapter
+        declared = {'model': 'inherit', 'effort': 'high', 'sandbox_type': 'read-only'}
+        actual = {'model': 'some-model', 'effort': 'high', 'sandbox_policy': {'type': 'read-only'}}
+        for adapter in (CodexAdapter(), ClaudeAdapter(), GrokAdapter()):
+            self.assertIsNone(adapter.runtime_contract(declared, actual))
+        for adapter in (CodexAdapter(), GrokAdapter()):
+            self.assertFalse(adapter.runtime_contract(declared, {**actual, 'effort': 'low'}))
+            self.assertFalse(adapter.runtime_contract(declared, {**actual, 'sandbox_policy': {'type': 'workspace-write'}}))
+
+    def test_optional_model_must_be_valid_when_present(self):
+        import tempfile
+        from pathlib import Path
+        from lib.adapters import CodexAdapter
+        for adapter in (CodexAdapter(), GrokAdapter()):
+            for invalid in (('', 123) if adapter.name == 'codex' else ('',)):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    (root / 'AGENTS.md').write_text('rules\n')
+                    agents = root / 'agents'
+                    agents.mkdir()
+                    if adapter.name == 'codex':
+                        import json
+                        (agents / 'a.toml').write_text('name = "a"\nmodel_reasoning_effort = "high"\nsandbox_mode = "read-only"\nmodel = ' + json.dumps(invalid) + '\n')
+                    else:
+                        (agents / 'a.md').write_text(f'---\nname: a\nmodel: "{invalid}"\neffort: high\npermission_mode: plan\n---\n')
+                    with self.assertRaises(RuntimeError):
+                        adapter.declared_runtime(root)

@@ -12,7 +12,7 @@ from ..evidence import write_events_evidence, write_session_evidence
 from ..runtime import ENV_ALLOWLIST, run_process
 from .base import EvalAdapter
 
-RUNTIME_FIELDS = ("model", "model_reasoning_effort", "sandbox_mode")
+RUNTIME_FIELDS = ("model_reasoning_effort", "sandbox_mode")
 
 
 class CodexAdapter(EvalAdapter):
@@ -47,6 +47,8 @@ class CodexAdapter(EvalAdapter):
                 data = tomllib.loads(path.read_text())
             except tomllib.TOMLDecodeError as exc:
                 raise RuntimeError(f"invalid agent TOML {path.name}: {exc}") from exc
+            if "model" in data and (not isinstance(data["model"], str) or not data["model"].strip()):
+                raise RuntimeError(f"invalid model declaration: {path.name}")
             role = data.get("name")
             if not isinstance(role, str) or not role:
                 raise RuntimeError(f"agent TOML {path.name} must declare a name")
@@ -55,7 +57,7 @@ class CodexAdapter(EvalAdapter):
             missing = [field for field in RUNTIME_FIELDS if not isinstance(data.get(field), str)]
             if missing:
                 raise RuntimeError(f"agent TOML {path.name} must declare: {', '.join(missing)}")
-            declared[role] = {"model": data["model"], "effort": data["model_reasoning_effort"], "sandbox_type": data["sandbox_mode"]}
+            declared[role] = {"model": data.get("model", "inherit"), "effort": data["model_reasoning_effort"], "sandbox_type": data["sandbox_mode"]}
         if not declared:
             raise RuntimeError("candidate snapshot must declare at least one custom agent TOML")
         return declared

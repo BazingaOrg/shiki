@@ -6,11 +6,11 @@
 
 | 角色 | 模型 | effort | permission_mode | role capability 默认 |
 | --- | --- | --- | --- | --- |
-| deep-reasoner | grok-4.6 | high | plan | read-only |
-| fast-worker | grok-4.6 | medium | default | all |
-| qa-runner | grok-4.6 | low | default | execute |
+| deep-reasoner | 默认继承 | high | plan | read-only |
+| fast-worker | 默认继承 | medium | default | all |
+| qa-runner | 默认继承 | low | default | execute |
 
-Grok 4.6 是当前编程与通用任务主力。先运行 `grok models` 核对账户实际可用型号；不要从其他厂商的型号或 API 列表推导 Build 可用模型。本机 2026-09-09 返回 4.6 和 4.5，默认 4.6。
+角色 frontmatter 省略 `model`。使用父会话模型前检查 `[subagents.models]`、role/persona 和 spawn 覆盖；用实际子会话确认继承。
 
 同一模型通过 effort 区分推理深度。QA 只执行指定检查并报告命令、退出码和失败证据；不设计测试、不修源码。失败由主模型判断：明确问题回实施方，根因不明或重复无进展则调整策略。
 
@@ -33,7 +33,7 @@ cp -i grok/AGENTS.md ~/.grok/rules/AGENTS.md
 
 ## 角色和配置优先级
 
-完整 agent 文件见 [grok/agents](./grok/agents/)，同名 role 见 [grok/roles](./grok/roles/)。Markdown frontmatter 指定 model、effort、permission_mode；role TOML 指定 reasoning_effort 和 default_capability_mode。两处 effort 保持一致。
+完整 agent 文件见 [grok/agents](./grok/agents/)，同名 role 见 [grok/roles](./grok/roles/)。Markdown frontmatter 指定 effort、permission_mode，省略 model；role TOML 指定 reasoning_effort 和 default_capability_mode。两处 effort 保持一致。
 
 安装版本自带 `16-subagents.md` 给出的 model/effort 优先级是：spawn 显式覆盖、role 默认、persona 默认、父会话。还可通过 `[subagents.models]` 指定 per-type 模型。role 文件可被 inline `[subagents.roles.*]` 配置覆盖；不能仅凭文件内容断言最终 runtime。
 

@@ -302,27 +302,15 @@ class EvaluationTests(unittest.TestCase):
         self.assertNotIn("excerpt", diagnostic)
 
     def test_rule_files_stay_in_sync_across_platforms(self):
-        rule_files = {
-            "claude": (M.REPO / "CLAUDE.md").read_text(),
-            "codex": (M.REPO / "codex" / "AGENTS.md").read_text(),
-            "grok": (M.REPO / "grok" / "AGENTS.md").read_text(),
-        }
-        native_main_sentences = {
-            "claude": "delegate to a configured subagent",
-            "codex": "spawn a named custom agent",
-            "grok": "use `spawn_subagent` with the matching `subagent_type`",
-        }
-        for platform, sentence in native_main_sentences.items():
-            self.assertIn(sentence, rule_files[platform])
-        self.assertEqual(rule_files["claude"].count("- Delegate to `"), 3)
-        self.assertEqual(rule_files["codex"].count("- Spawn `"), 3)
-        self.assertEqual(rule_files["grok"].count("- Spawn `"), 3)
-        normalized = {}
-        for platform, rules in rule_files.items():
-            rules = rules.replace(native_main_sentences[platform], "delegate to a configured subagent")
-            normalized[platform] = re.sub(r"(?m)^- (?:Delegate to|Spawn) `", "- Route to `", rules)
-        self.assertEqual(normalized["claude"], normalized["codex"], "CLAUDE.md and codex/AGENTS.md drifted; re-sync both files")
-        self.assertEqual(normalized["claude"], normalized["grok"], "CLAUDE.md and grok/AGENTS.md drifted; re-sync both files")
+        paths = [M.REPO / "CLAUDE.md", M.REPO / "codex/AGENTS.md", M.REPO / "grok/AGENTS.md"]
+        prefixes = ["- Delegate to configured subagents:", "- Spawn named custom agents:", "- Use `spawn_subagent` with the matching `subagent_type`:"]
+        normalized = []
+        for path, prefix in zip(paths, prefixes):
+            content = path.read_text()
+            self.assertEqual(content.count(prefix), 1, str(path))
+            normalized.append(content.replace(prefix, "- Delegate:"))
+        self.assertEqual(normalized[0], normalized[1])
+        self.assertEqual(normalized[0], normalized[2])
 
     def test_rule_files_do_not_force_delegation_by_fixed_file_count(self):
         fixed_count_routing = re.compile(

@@ -1,7 +1,7 @@
 ---
 name: qa-runner
 description: Use for bounded verification work — run specified tests, typecheck, or lint and report evidence. Do not diagnose or fix failures.
-model: haiku
+model: inherit
 ---
 Run only the assigned verification. Record commands, exit codes, PASS/FAIL,
 and relevant failing output. Do not diagnose, design test plans, review

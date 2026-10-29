@@ -3,7 +3,6 @@ name: qa-runner
 description: >
   Use for bounded verification work — run specified tests, typecheck, or lint
   and report evidence. Do not diagnose or fix failures.
-model: grok-4.6
 effort: low
 prompt_mode: full
 permission_mode: default

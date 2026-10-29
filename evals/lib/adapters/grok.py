@@ -30,7 +30,7 @@ from ..evidence import _safe, reported_cost, secret_patterns, usage_values
 from ..runtime import run_process
 from .base import EvalAdapter
 
-RUNTIME_FIELDS = ("name", "model", "effort", "permission_mode")
+RUNTIME_FIELDS = ("name", "effort", "permission_mode")
 CAPABILITY_MAP = {"read-write": "workspace-write", "read-only": "read-only"}
 WRITE_LEVEL = {"read-only": 0, "execute": 0, "workspace-write": 1, "read-write": 1, "all": 1}
 WRITE_TOOLS = {"search_replace", "apply_patch", "Bash", "bash", "run_terminal_command"}
@@ -57,7 +57,7 @@ class GrokAdapter(EvalAdapter):
         # deployed build ("grok-4.5-build"); a declared family matches its build.
         # Capability mode is model-chosen per spawn: the declared mode is a ceiling,
         # observed must not be broader (read-only/execute satisfy a read-write ceiling).
-        model_ok = actual.get("model") == declared["model"] or str(actual.get("model", "")).startswith(declared["model"] + "-")
+        model_ok = declared["model"] == "inherit" or actual.get("model") == declared["model"] or str(actual.get("model", "")).startswith(declared["model"] + "-")
         sandbox = actual.get("sandbox_policy")
         sandbox_type = sandbox.get("type") if isinstance(sandbox, dict) else sandbox
         if not model_ok or actual.get("effort") != declared["effort"]:
@@ -65,7 +65,9 @@ class GrokAdapter(EvalAdapter):
         if sandbox_type not in WRITE_LEVEL:
             return None
         sandbox_ok = sandbox_type in WRITE_LEVEL and declared["sandbox_type"] in WRITE_LEVEL and WRITE_LEVEL[sandbox_type] <= WRITE_LEVEL[declared["sandbox_type"]]
-        return model_ok and actual.get("effort") == declared["effort"] and sandbox_ok
+        if not sandbox_ok:
+            return False
+        return None if declared["model"] == "inherit" else True
 
     def __init__(self) -> None:
         super().__init__()
@@ -92,10 +94,12 @@ class GrokAdapter(EvalAdapter):
             missing = [field for field in RUNTIME_FIELDS if not data.get(field)]
             if missing:
                 raise RuntimeError(f"agent profile {path.name} must declare: {', '.join(missing)}")
+            if "model" in data and (not isinstance(data["model"], str) or not data["model"].strip()):
+                raise RuntimeError(f"invalid model declaration: {path.name}")
             role = data["name"]
             if role in declared:
                 raise RuntimeError(f"duplicate agent role in profiles: {role}")
-            declared[role] = {"model": data["model"], "effort": data["effort"], "sandbox_type": "read-only" if data["permission_mode"] == "plan" else "workspace-write"}
+            declared[role] = {"model": data.get("model", "inherit"), "effort": data["effort"], "sandbox_type": "read-only" if data["permission_mode"] == "plan" else "workspace-write"}
         if not declared:
             raise RuntimeError("candidate snapshot must declare at least one custom agent profile")
         return declared

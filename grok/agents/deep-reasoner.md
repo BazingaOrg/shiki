@@ -4,7 +4,6 @@ description: >
   Use for reasoning-heavy phases, architecture, debugging complex issues,
   algorithm design. Think thoroughly, return a concise conclusion the
   orchestrator can act on.
-model: grok-4.6
 effort: high
 prompt_mode: full
 permission_mode: plan

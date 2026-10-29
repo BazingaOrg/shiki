@@ -40,6 +40,10 @@ runner 在模型边界外记录前后 HEAD/diff identity、文件哈希，并独
 
 每次 run 保存经过裁剪/脱敏的证据、`summary-core.json` 和 evidence root。runner digest 覆盖入口与 lib 源码；配置、fixture、CLI 和工具链身份进入记录。比较先验证 evidence root。失败只保留分类、退出码及可解析重试时间，不保存自由文本错误作为可分享证据。
 
+## 模型继承的验证边界
+
+角色模型不再固定。Codex/Grok 缺省 model 及 Claude 的 inherit 在评测声明中记为 `inherit`。当前评测器尚未建立父子有效模型的继承证据关联，因此这类 runtime 合同保留 UNKNOWN，不把格式解析通过当作继承验证通过。已知 effort/权限违规仍按合同处理。旧的显式型号 fixture 保留，用于验证固定模型匹配逻辑。runner 的默认主模型只用于评测复现，不是角色绑定；运行模型实验应显式传入型号。
+
 ## 三平台合同
 
 **Codex**：使用 `codex exec --json` 与隔离 `CODEX_HOME`。模型、effort 和 sandbox 从 session 读取，与候选 TOML 比较。当前版本门只接受已验证的 `0.146.x`；新版客户端需先验证事件结构，不能因为桌面模型列表已有 Astra 就跳过 CLI 兼容检查。

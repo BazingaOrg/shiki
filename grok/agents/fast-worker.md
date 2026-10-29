@@ -3,7 +3,6 @@ name: fast-worker
 description: >
   Use for mechanical tasks, boilerplate, tests, formatting, simple edits.
   Execute efficiently.
-model: grok-4.6
 effort: medium
 prompt_mode: full
 permission_mode: default
